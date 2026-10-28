@@ -1,0 +1,9 @@
+{
+  "name": "TBS - Registro de Bitácoras odómetro ",
+  "description": "Aplicación móvil para el registro de bitácoras y control operativo de TBS Logistics Services.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}

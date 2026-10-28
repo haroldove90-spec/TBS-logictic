@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80">
+  <defs>
+    <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Truck Icon Badge -->
+  <rect x="4" y="8" width="64" height="64" rx="14" fill="url(#logoGrad)"/>
+  
+  <g transform="translate(14, 20) scale(0.24)">
+    <path d="M 0 30 L 110 30 L 110 120 L 0 120 Z" fill="#ffffff" rx="6"/>
+    <path d="M 114 55 L 145 55 L 175 85 L 175 120 L 114 120 Z" fill="#ffffff"/>
+    <path d="M 120 62 L 140 62 L 162 85 L 120 85 Z" fill="#0f172a"/>
+    <circle cx="35" cy="125" r="20" fill="#0f172a" stroke="#ffffff" stroke-width="4"/>
+    <circle cx="90" cy="125" r="20" fill="#0f172a" stroke="#ffffff" stroke-width="4"/>
+    <circle cx="150" cy="125" r="20" fill="#0f172a" stroke="#ffffff" stroke-width="4"/>
+  </g>
+
+  <!-- Typography -->
+  <text x="80" y="44" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif" font-size="34" font-weight="900" fill="#ffffff" letter-spacing="1">
+    TBS
+  </text>
+  <text x="82" y="62" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="700" fill="#38bdf8" letter-spacing="2">
+    LOGISTICS SERVICES
+  </text>
+</svg>

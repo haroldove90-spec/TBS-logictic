@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)"/>
+  <rect width="510" height="510" x="1" y="1" rx="111" fill="none" stroke="#334155" stroke-width="2"/>
+
+  <!-- Glowing Emblem Circle -->
+  <circle cx="256" cy="220" r="140" fill="url(#accentGrad)" opacity="0.15"/>
+  <circle cx="256" cy="220" r="120" fill="url(#accentGrad)" opacity="0.25"/>
+
+  <!-- Truck Icon / Logistics Art -->
+  <g transform="translate(146, 120)" filter="url(#shadow)">
+    <!-- Cargo Box -->
+    <path d="M 0 30 L 130 30 L 130 130 L 0 130 Z" fill="#ffffff" rx="10"/>
+    <path d="M 12 42 L 118 42 L 118 118 L 12 118 Z" fill="#0284c7" opacity="0.15"/>
+    <path d="M 65 42 L 65 118" stroke="#0284c7" stroke-width="4" stroke-dasharray="8 6"/>
+
+    <!-- Cab -->
+    <path d="M 134 60 L 175 60 L 210 95 L 210 130 L 134 130 Z" fill="#38bdf8"/>
+    <!-- Cab Window -->
+    <path d="M 142 68 L 170 68 L 195 95 L 142 95 Z" fill="#0f172a" opacity="0.85"/>
+    
+    <!-- Wheels -->
+    <circle cx="45" cy="135" r="24" fill="#0f172a" stroke="#ffffff" stroke-width="6"/>
+    <circle cx="45" cy="135" r="10" fill="#38bdf8"/>
+
+    <circle cx="105" cy="135" r="24" fill="#0f172a" stroke="#ffffff" stroke-width="6"/>
+    <circle cx="105" cy="135" r="10" fill="#38bdf8"/>
+
+    <circle cx="175" cy="135" r="24" fill="#0f172a" stroke="#ffffff" stroke-width="6"/>
+    <circle cx="175" cy="135" r="10" fill="#38bdf8"/>
+
+    <!-- Speed Lines -->
+    <line x1="-30" y1="50" x2="-10" y2="50" stroke="#38bdf8" stroke-width="6" stroke-linecap="round"/>
+    <line x1="-45" y1="80" x2="-10" y2="80" stroke="#38bdf8" stroke-width="6" stroke-linecap="round"/>
+    <line x1="-25" y1="110" x2="-10" y2="110" stroke="#38bdf8" stroke-width="6" stroke-linecap="round"/>
+  </g>
+
+  <!-- TBS Typography -->
+  <text x="256" y="380" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif" font-size="64" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="4">
+    TBS
+  </text>
+  <text x="256" y="420" font-family="-apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="700" fill="#38bdf8" text-anchor="middle" letter-spacing="6">
+    LOGISTICS
+  </text>
+</svg>
