@@ -31,6 +31,88 @@ const getTripTotalExpenses = (trip: Trip): number => {
   }, 0);
 };
 
+// ==========================================
+// UTILIDADES PARA FILTRADO POR FECHA
+// ==========================================
+export type DateFilterMode = 'ALL' | 'TODAY' | 'YESTERDAY' | 'WEEK' | 'MONTH' | 'CUSTOM';
+
+export interface DateRangeResult {
+  start: string; // YYYY-MM-DD o ''
+  end: string;   // YYYY-MM-DD o ''
+  label: string;
+}
+
+export const normalizeToYMD = (val: any): string => {
+  if (!val) return '';
+  if (typeof val === 'number') {
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+  }
+  const s = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+    return s.slice(0, 10);
+  }
+  const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (dmy) {
+    const day = dmy[1].padStart(2, '0');
+    const month = dmy[2].padStart(2, '0');
+    const year = dmy[3];
+    return `${year}-${month}-${day}`;
+  }
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) {
+    return d.toISOString().split('T')[0];
+  }
+  return '';
+};
+
+export const getDateRange = (mode: DateFilterMode, customStart: string = '', customEnd: string = ''): DateRangeResult => {
+  const now = new Date();
+  const today = now.toISOString().split('T')[0];
+
+  if (mode === 'TODAY') {
+    return { start: today, end: today, label: `Hoy (${today})` };
+  }
+  if (mode === 'YESTERDAY') {
+    const y = new Date();
+    y.setDate(y.getDate() - 1);
+    const yesterday = y.toISOString().split('T')[0];
+    return { start: yesterday, end: yesterday, label: `Ayer (${yesterday})` };
+  }
+  if (mode === 'WEEK') {
+    const d = new Date(now);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    const monday = new Date(d.setDate(diff)).toISOString().split('T')[0];
+    return { start: monday, end: today, label: `Esta semana (${monday} al ${today})` };
+  }
+  if (mode === 'MONTH') {
+    const start = `${today.slice(0, 7)}-01`;
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const end = `${today.slice(0, 7)}-${String(lastDay).padStart(2, '0')}`;
+    return { start, end, label: `Este mes (${start} al ${end})` };
+  }
+  if (mode === 'CUSTOM' || customStart || customEnd) {
+    const start = customStart || '';
+    const end = customEnd || '';
+    let label = 'Personalizado';
+    if (start && end) label = `${start} al ${end}`;
+    else if (start) label = `Desde ${start}`;
+    else if (end) label = `Hasta ${end}`;
+    return { start, end, label };
+  }
+  return { start: '', end: '', label: 'Todos los registros' };
+};
+
+export const filterByDateRange = (dateVal: any, range: DateRangeResult): boolean => {
+  if (!range.start && !range.end) return true;
+  const ymd = normalizeToYMD(dateVal);
+  if (!ymd) return false;
+  if (range.start && ymd < range.start) return false;
+  if (range.end && ymd > range.end) return false;
+  return true;
+};
+
 // Función genérica para descargar Excel ajustando anchos de columna
 export const exportDataToExcel = (data: Record<string, any>[], filePrefix: string, sheetName: string = 'Datos') => {
   if (!data || data.length === 0) {
@@ -59,7 +141,7 @@ export const exportDataToExcel = (data: Record<string, any>[], filePrefix: strin
 // 1. MÓDULO BITÁCORAS (VIAJES ACTIVOS)
 // ==========================================
 
-export const exportBitacorasExcel = (trips: Trip[], operators: Operator[]) => {
+export const exportBitacorasExcel = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
   const data = trips.map(t => {
     const totalExpenses = getTripTotalExpenses(t);
     const destStr = t.destinations && t.destinations.length > 0
@@ -87,10 +169,11 @@ export const exportBitacorasExcel = (trips: Trip[], operators: Operator[]) => {
     };
   });
 
-  exportDataToExcel(data, 'TLS_Bitacoras_Activas', 'Bitacoras');
+  const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
+  exportDataToExcel(data, `TLS_Bitacoras_Activas${cleanLabel}`, 'Bitacoras');
 };
 
-export const exportBitacorasPDF = (trips: Trip[], operators: Operator[]) => {
+export const exportBitacorasPDF = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
   if (!trips || trips.length === 0) {
     alert('No hay bitácoras activas para exportar.');
     return;
@@ -109,7 +192,8 @@ export const exportBitacorasPDF = (trips: Trip[], operators: Operator[]) => {
 
   doc.setFontSize(8);
   doc.setFont('helvetica', 'normal');
-  doc.text(`Generado: ${new Date().toLocaleString('es-MX')} | Total: ${trips.length} viajes`, pageWidth - 14, 14, { align: 'right' });
+  const periodText = dateRangeLabel ? `Filtro Fecha: ${dateRangeLabel} | ` : '';
+  doc.text(`${periodText}Generado: ${new Date().toLocaleString('es-MX')} | Total: ${trips.length} viajes`, pageWidth - 14, 14, { align: 'right' });
 
   // Summary Metrics Bar
   const totalGastos = trips.reduce((acc, t) => acc + getTripTotalExpenses(t), 0);
@@ -165,14 +249,15 @@ export const exportBitacorasPDF = (trips: Trip[], operators: Operator[]) => {
     }
   });
 
-  doc.save(`TLS_Bitacoras_Activas_${getFormattedTimestamp()}.pdf`);
+  const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
+  doc.save(`TLS_Bitacoras_Activas${cleanLabel}_${getFormattedTimestamp()}.pdf`);
 };
 
 // ==========================================
 // 2. MÓDULO HISTORIAL (VIAJES ARCHIVADOS)
 // ==========================================
 
-export const exportHistoryExcel = (trips: Trip[], operators: Operator[]) => {
+export const exportHistoryExcel = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
   const data = trips.map(t => {
     const kmRecorridos = Math.max(0, (t.odometerEnd || 0) - (t.odometerStart || 0));
     const extraCosts = getTripTotalExpenses(t);
@@ -198,10 +283,11 @@ export const exportHistoryExcel = (trips: Trip[], operators: Operator[]) => {
     };
   });
 
-  exportDataToExcel(data, 'TLS_Historial_Viajes', 'Historial');
+  const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
+  exportDataToExcel(data, `TLS_Historial_Viajes${cleanLabel}`, 'Historial');
 };
 
-export const exportHistoryPDF = (trips: Trip[], operators: Operator[]) => {
+export const exportHistoryPDF = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
   if (!trips || trips.length === 0) {
     alert('No hay viajes en el historial para exportar.');
     return;
@@ -219,7 +305,8 @@ export const exportHistoryPDF = (trips: Trip[], operators: Operator[]) => {
 
   doc.setFontSize(8);
   doc.setFont('helvetica', 'normal');
-  doc.text(`Generado: ${new Date().toLocaleString('es-MX')} | Total: ${trips.length} viajes`, pageWidth - 14, 14, { align: 'right' });
+  const periodText = dateRangeLabel ? `Filtro Fecha: ${dateRangeLabel} | ` : '';
+  doc.text(`${periodText}Generado: ${new Date().toLocaleString('es-MX')} | Total: ${trips.length} viajes`, pageWidth - 14, 14, { align: 'right' });
 
   // Métricas
   const totalKm = trips.reduce((acc, t) => acc + Math.max(0, (t.odometerEnd || 0) - (t.odometerStart || 0)), 0);
@@ -277,7 +364,8 @@ export const exportHistoryPDF = (trips: Trip[], operators: Operator[]) => {
     }
   });
 
-  doc.save(`TLS_Historial_Viajes_${getFormattedTimestamp()}.pdf`);
+  const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
+  doc.save(`TLS_Historial_Viajes${cleanLabel}_${getFormattedTimestamp()}.pdf`);
 };
 
 // ==========================================
@@ -540,7 +628,7 @@ export const extractFlatExpenses = (trips: Trip[], operators: Operator[]): FlatE
   return rows.sort((a, b) => b.timestamp - a.timestamp);
 };
 
-export const exportExpensesExcel = (expenses: FlatExpenseRow[]) => {
+export const exportExpensesExcel = (expenses: FlatExpenseRow[], dateRangeLabel?: string) => {
   const data = expenses.map(e => ({
     'Código de Viaje': e.tripCode,
     'Fecha': e.dateStr,
@@ -555,10 +643,11 @@ export const exportExpensesExcel = (expenses: FlatExpenseRow[]) => {
     'Evidencia / Ticket': e.evidenceUrl ? e.evidenceUrl : 'Sin foto'
   }));
 
-  exportDataToExcel(data, 'TLS_Gastos_Operadores', 'Gastos');
+  const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
+  exportDataToExcel(data, `TLS_Gastos_Operadores${cleanLabel}`, 'Gastos');
 };
 
-export const exportExpensesPDF = (expenses: FlatExpenseRow[]) => {
+export const exportExpensesPDF = (expenses: FlatExpenseRow[], dateRangeLabel?: string) => {
   if (!expenses || expenses.length === 0) {
     alert('No hay gastos registrados para exportar.');
     return;
@@ -576,7 +665,8 @@ export const exportExpensesPDF = (expenses: FlatExpenseRow[]) => {
 
   doc.setFontSize(8);
   doc.setFont('helvetica', 'normal');
-  doc.text(`Generado: ${new Date().toLocaleString('es-MX')} | Total: ${expenses.length} conceptos`, pageWidth - 14, 14, { align: 'right' });
+  const periodText = dateRangeLabel ? `Filtro Fecha: ${dateRangeLabel} | ` : '';
+  doc.text(`${periodText}Generado: ${new Date().toLocaleString('es-MX')} | Total: ${expenses.length} conceptos`, pageWidth - 14, 14, { align: 'right' });
 
   // Métricas financieras
   const totalGeneral = expenses.reduce((s, e) => s + e.amount, 0);
@@ -637,5 +727,6 @@ export const exportExpensesPDF = (expenses: FlatExpenseRow[]) => {
     }
   });
 
-  doc.save(`TLS_Gastos_Operadores_${getFormattedTimestamp()}.pdf`);
+  const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
+  doc.save(`TLS_Gastos_Operadores${cleanLabel}_${getFormattedTimestamp()}.pdf`);
 };
