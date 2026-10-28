@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, (process as any).cwd(), '');
   
   return {
-    plugins: [react()],
+    plugins: [react({ fastRefresh: false })],
     build: {
       outDir: 'dist',
       sourcemap: false,

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
-import { ShieldCheck, KeyRound, UserPlus, Truck, FileBadge, Hash, ChevronLeft, User as UserIcon, Lock, Download, X } from 'lucide-react';
+import { ShieldCheck, KeyRound, UserPlus, Truck, FileBadge, Hash, ChevronLeft, User as UserIcon, Lock, Download, X, Eye, EyeOff } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 
 interface LoginProps {
@@ -12,6 +12,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
   // Estado para Login
   const [loginUser, setLoginUser] = useState('');
   const [loginPass, setLoginPass] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
@@ -19,6 +20,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
   
   // Estado para modo Registro
   const [isRegistering, setIsRegistering] = useState(false);
+  const [showRegPassword, setShowRegPassword] = useState(false);
   const [regData, setRegData] = useState({
     username: '',
     password: '',
@@ -227,7 +229,27 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                         <label className="block text-xs font-bold text-slate-600 mb-1">Contraseña *</label>
                         <div className="relative">
                             <Lock className="absolute left-3 top-3 h-4 w-4 text-blue-400" />
-                            <input required type="password" value={regData.password} onChange={e => setRegData({...regData, password: e.target.value})} className="w-full pl-9 pr-3 py-2 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" placeholder="******" />
+                            <input 
+                                required 
+                                type={showRegPassword ? "text" : "password"} 
+                                value={regData.password} 
+                                onChange={e => setRegData({...regData, password: e.target.value})} 
+                                className="w-full pl-9 pr-10 py-2 bg-white border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" 
+                                placeholder="******" 
+                            />
+                            <button
+                                type="button"
+                                onClick={() => setShowRegPassword(!showRegPassword)}
+                                className="absolute right-2.5 top-2.5 text-slate-400 hover:text-slate-600 focus:outline-none transition-colors"
+                                title={showRegPassword ? "Ocultar contraseña" : "Ver contraseña"}
+                                aria-label={showRegPassword ? "Ocultar contraseña" : "Ver contraseña"}
+                            >
+                                {showRegPassword ? (
+                                    <EyeOff className="h-4 w-4" />
+                                ) : (
+                                    <Eye className="h-4 w-4" />
+                                )}
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -306,14 +328,27 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                         <label className="block text-xs font-black text-slate-500 uppercase mb-2 tracking-wider">Contraseña</label>
                         <div className="relative">
                             <input
-                                type="password"
+                                type={showPassword ? "text" : "password"}
                                 value={loginPass}
                                 onChange={(e) => setLoginPass(e.target.value)}
-                                className="w-full pl-10 pr-4 py-4 bg-slate-50 border-2 border-slate-200 text-slate-900 placeholder-slate-400 rounded-xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-600 outline-none transition-all font-bold"
+                                className="w-full pl-10 pr-12 py-4 bg-slate-50 border-2 border-slate-200 text-slate-900 placeholder-slate-400 rounded-xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-600 outline-none transition-all font-bold"
                                 placeholder="******"
                                 autoComplete="current-password"
                             />
                             <KeyRound className="absolute left-3 top-4 h-5 w-5 text-slate-400" />
+                            <button
+                                type="button"
+                                onClick={() => setShowPassword(!showPassword)}
+                                className="absolute right-3 top-3.5 p-1 text-slate-400 hover:text-slate-600 focus:outline-none transition-colors"
+                                title={showPassword ? "Ocultar contraseña" : "Ver contraseña"}
+                                aria-label={showPassword ? "Ocultar contraseña" : "Ver contraseña"}
+                            >
+                                {showPassword ? (
+                                    <EyeOff className="h-5 w-5" />
+                                ) : (
+                                    <Eye className="h-5 w-5" />
+                                )}
+                            </button>
                         </div>
                     </div>
                 </div>
