@@ -94,8 +94,8 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
         const { data, error } = await supabase
             .from('operadores')
             .select('*')
-            .eq('username', userClean) // Username exacto (case sensitive en BD por defecto)
-            .eq('password', passClean) // Password exacto
+            .ilike('username', userClean) // Case-insensitive para evitar fallos por mayúsculas en teclados móviles
+            .eq('password', passClean)
             .single();
 
         if (error) {
@@ -295,6 +295,9 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                                 className="w-full pl-10 pr-4 py-4 bg-slate-50 border-2 border-slate-200 text-slate-900 placeholder-slate-400 rounded-xl focus:ring-4 focus:ring-blue-500/10 focus:border-blue-600 outline-none transition-all font-bold"
                                 placeholder="Ingresa tu usuario"
                                 autoComplete="username"
+                                autoCapitalize="none"
+                                autoCorrect="off"
+                                spellCheck={false}
                             />
                             <UserIcon className="absolute left-3 top-4 h-5 w-5 text-slate-400" />
                         </div>

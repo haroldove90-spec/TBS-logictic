@@ -8,10 +8,42 @@ import { createClient } from '@supabase/supabase-js';
 
 const env = (import.meta as any).env || {};
 
-const supabaseUrl = env.VITE_SUPABASE_URL || 'https://vkzzfccktctoljvkmwsz.supabase.co';
+function sanitizeSupabaseUrl(raw?: string): string {
+  if (!raw || typeof raw !== 'string') {
+    return 'https://vkzzfccktctoljvkmwsz.supabase.co';
+  }
+  let url = raw.trim();
 
-// API Key oficial del proyecto proporcionada por el usuario
-const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZrenpmY2NrdGN0b2xqdmttd3N6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwMTU5MjcsImV4cCI6MjA4MTU5MTkyN30.E-gEYVtixbbfmktUKVXUOUykr5vHizqVfvzMaJ3Thtk'; 
+  // Si se pegó la URL del dashboard de Supabase (ej: https://supabase.com/dashboard/project/vkzzfccktctoljvkmwsz)
+  const dashboardMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9_-]+)/i);
+  if (dashboardMatch) {
+    return `https://${dashboardMatch[1]}.supabase.co`;
+  }
+
+  // Prevenir error 'Invalid path specified in request URL' si se copió la REST URL con /rest/v1
+  url = url.replace(/\/rest\/v1\/?$/i, '');
+  url = url.replace(/\/+$/, '');
+
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = `https://${url}`;
+  }
+
+  return url;
+}
+
+const rawUrl = env.VITE_SUPABASE_URL || env.SUPABASE_URL;
+export const supabaseUrl = sanitizeSupabaseUrl(rawUrl);
+
+// Soporte para VITE_SUPABASE_ANON_KEY y para variantes como VITE_SUPABASE_ANO (nombre recortado en secrets)
+const rawAnonKey = 
+  env.VITE_SUPABASE_ANON_KEY || 
+  env.VITE_SUPABASE_ANO || 
+  env.VITE_SUPABASE_ANON || 
+  env.SUPABASE_ANON_KEY;
+
+export const supabaseAnonKey = (rawAnonKey && rawAnonKey.trim() !== '')
+  ? rawAnonKey.trim()
+  : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZrenpmY2NrdGN0b2xqdmttd3N6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwMTU5MjcsImV4cCI6MjA4MTU5MTkyN30.E-gEYVtixbbfmktUKVXUOUykr5vHizqVfvzMaJ3Thtk';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
