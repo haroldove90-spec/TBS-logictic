@@ -8,8 +8,8 @@ import { createClient } from '@supabase/supabase-js';
 
 const env = (import.meta as any).env || {};
 
-function sanitizeSupabaseUrl(raw?: string): string {
-  if (!raw || typeof raw !== 'string') {
+export function sanitizeSupabaseUrl(raw?: string): string {
+  if (!raw || typeof raw !== 'string' || raw.trim() === '') {
     return 'https://vkzzfccktctoljvkmwsz.supabase.co';
   }
   let url = raw.trim();
@@ -20,13 +20,23 @@ function sanitizeSupabaseUrl(raw?: string): string {
     return `https://${dashboardMatch[1]}.supabase.co`;
   }
 
-  // Prevenir error 'Invalid path specified in request URL' si se copió la REST URL con /rest/v1
-  url = url.replace(/\/rest\/v1\/?$/i, '');
-  url = url.replace(/\/+$/, '');
-
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     url = `https://${url}`;
   }
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname.includes('supabase.co')) {
+      // Retorna estrictamente el origen https://xxxx.supabase.co sin ningún pathname
+      return parsed.origin;
+    }
+  } catch (e) {
+    // Fallback manual si URL falla
+  }
+
+  // Prevenir error 'Invalid path specified in request URL' si se copió la REST URL con /rest/v1
+  url = url.replace(/\/rest\/v1.*$/i, '');
+  url = url.replace(/\/+$/, '');
 
   return url;
 }

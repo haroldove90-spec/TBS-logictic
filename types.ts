@@ -111,9 +111,20 @@ export interface ExpenseRecord {
 }
 // -------------------------
 
+export interface TripEventLog {
+  id: string;
+  timestamp: number; // Milisegundos Date.now()
+  dateFormatted: string; // "DD/MM/AAAA HH:mm:ss"
+  eventType: 'CREACION' | 'ASIGNACION' | 'NOTIFICACION' | 'ACEPTACION' | 'ETAPA' | 'EVIDENCIA' | 'GASTO' | 'UBICACION' | 'ODOMETRO' | 'INCIDENCIA' | 'OTRO';
+  description: string;
+  user: string;
+  details?: string;
+}
+
 export interface Trip {
   id: string;
   code: string;
+  created_at?: string;
   origin: string;
   originAddress?: string;
   originMapsLink?: string;
@@ -146,6 +157,7 @@ export interface Trip {
 
   locationHistory: LocationReport[];
   extraCosts: ExpenseRecord[]; 
+  event_log?: TripEventLog[];
   
   odometerStart?: number;
   odometerEnd?: number;

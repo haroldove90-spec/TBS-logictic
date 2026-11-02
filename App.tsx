@@ -7,7 +7,7 @@ import { AdminDashboard } from './pages/AdminDashboard';
 import { Header } from './Header';
 import { User, Trip, TripStatus, AppNotification } from './types';
 import { MOCK_TRIPS, TRIP_STAGES } from './constants';
-import { requestNotificationPermission, playSound, sendPushNotification } from './utils';
+import { requestNotificationPermission, playSound, sendPushNotification, createTripEvent } from './utils';
 import { supabase } from './supabaseClient';
 import { Siren, X, CheckCircle, AlertCircle, Info, Truck, RefreshCw } from 'lucide-react';
 import { NewTripModal } from './pages/NewTripModal';
@@ -187,6 +187,8 @@ const App: React.FC = () => {
             evidenceStatus: t.evidence_status || 'NONE',
             locationHistory: t.locationhistory || [],
             extraCosts: t.extra_costs || [],
+            event_log: t.event_log || [],
+            created_at: t.created_at,
             odometerStart: t.odometer_start ? Number(t.odometer_start) : undefined,
             odometerEnd: t.odometer_end ? Number(t.odometer_end) : undefined,
             odometerAnterior: t.odometer_anterior ? Number(t.odometer_anterior) : undefined,
@@ -404,8 +406,24 @@ const App: React.FC = () => {
       
       if(newlyAssignedTrip) setNewlyAssignedTrip(null);
 
+      // Obtener ECO para notificacion y registro
+      let unitEco = tripToAccept.plate;
+      try {
+          const { data: unitData } = await supabase.from('unidades').select('eco').eq('plate', tripToAccept.plate).single();
+          if (unitData && unitData.eco) unitEco = unitData.eco;
+      } catch(e) {}
+
+      // Registrar Evento con Fecha y Hora Exacta
+      const acceptEvent = createTripEvent(
+          'ACEPTACION',
+          'Viaje aceptado y confirmado por el operador',
+          user?.name || tripToAccept.plate || 'Operador',
+          `Unidad ECO ${unitEco} aceptó el viaje para comenzar ruta`
+      );
+      const updatedEventLog = [...(tripToAccept.event_log || []), acceptEvent];
+
       // Actualiza el estado local inmediatamente para una UI fluida
-      const updatedTrip = { ...tripToAccept, status: TripStatus.IN_TRANSIT };
+      const updatedTrip = { ...tripToAccept, status: TripStatus.IN_TRANSIT, event_log: updatedEventLog };
       updateTrip(updatedTrip);
 
       // NAVEGACIÓN: Redirige al operador al monitor para que registre el odómetro
@@ -415,15 +433,11 @@ const App: React.FC = () => {
       // Actualiza la base de datos en segundo plano
       const { error } = await supabase
           .from('viajes')
-          .update({ status: TripStatus.IN_TRANSIT }) // Se actualiza a "En Curso" como se solicitó
+          .update({ 
+              status: TripStatus.IN_TRANSIT,
+              event_log: updatedEventLog 
+          })
           .eq('id', tripToAccept.id);
-      
-      // Obtener ECO para notificacion
-      let unitEco = tripToAccept.plate;
-      try {
-          const { data: unitData } = await supabase.from('unidades').select('eco').eq('plate', tripToAccept.plate).single();
-          if (unitData && unitData.eco) unitEco = unitData.eco;
-      } catch(e) {}
 
       await supabase.from('notificaciones').insert({
           target_role: 'ADMIN',

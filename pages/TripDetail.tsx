@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Trip, TripStatus, EvidenceStatus, Evidence, LocationReport, TripDestination, ExpenseCategory, ExpenseItem, ExpenseRecord, User } from '../types';
 import { TRIP_STAGES } from '../constants';
 import { supabase, checkStorageBucket } from '../supabaseClient';
-import { sendPushNotification, playSound, processWatermark, getCurrentLocation } from '../utils';
+import { sendPushNotification, playSound, processWatermark, getCurrentLocation, createTripEvent } from '../utils';
 import { 
   ArrowLeft, Check, BellRing, MapPin, AlertTriangle, 
   Navigation, Camera, Loader, Fuel, Clock, RotateCcw, 
@@ -483,7 +483,19 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
         const newRecord: ExpenseRecord = { id: Math.random().toString(36).substr(2, 9), category: expandedCategory, items: validRows, total: total, timestamp: Date.now(), evidence: expenseEvidence };
         const updatedCosts = [...(trip.extraCosts || []), newRecord];
         
-        const updatePayload: any = { extra_costs: updatedCosts };
+        // Registrar Evento con Fecha y Hora Exacta
+        const expenseEvent = createTripEvent(
+            'GASTO',
+            `Gasto registrado: ${subCategory || expandedCategory} ($${total.toFixed(2)})`,
+            user?.name || trip.plate,
+            validRows.map(r => `${r.concept}: $${r.amount}`).join(' | ')
+        );
+        const updatedEventLog = [...(trip.event_log || []), expenseEvent];
+
+        const updatePayload: any = { 
+            extra_costs: updatedCosts,
+            event_log: updatedEventLog
+        };
         if (subCategory === 'COMBUSTIBLE' && newOdometerValue > 0) {
             // Actualizamos el 'odometer_end' del viaje con la lectura más reciente del odómetro
             updatePayload.odometer_end = newOdometerValue; 
@@ -509,7 +521,10 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
             metadata: { trip_id: trip.id, image_url: expenseImageUrl, amount: total, category: expandedCategory, sub_category: subCategory }
         });
 
-        const tripUpdateData: Partial<Trip> = { extraCosts: updatedCosts };
+        const tripUpdateData: Partial<Trip> = { 
+            extraCosts: updatedCosts,
+            event_log: updatedEventLog 
+        };
         if (subCategory === 'COMBUSTIBLE' && newOdometerValue > 0) {
             tripUpdateData.odometerEnd = newOdometerValue;
         }
@@ -554,7 +569,20 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
         };
 
         const updatedHistory = [...(trip.locationHistory || []), newReport];
-        const { error } = await supabase.from('viajes').update({ locationhistory: updatedHistory }).eq('id', trip.id);
+        
+        // Registrar Evento con Fecha y Hora Exacta
+        const locEvent = createTripEvent(
+            'UBICACION',
+            `Ubicación GPS compartida: ${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}`,
+            user?.name || trip.plate,
+            'Reporte de ubicación manual a Torre de Control'
+        );
+        const updatedEventLog = [...(trip.event_log || []), locEvent];
+
+        const { error } = await supabase.from('viajes').update({ 
+            locationhistory: updatedHistory,
+            event_log: updatedEventLog 
+        }).eq('id', trip.id);
         
         const { error: notifError } = await supabase.from('notificaciones').insert({
             target_role: 'ADMIN',
@@ -562,7 +590,7 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
             message: `ECO ${unitEco} compartió su ubicación: ${location.lat.toFixed(5)}, ${location.lng.toFixed(5)}`,
             type: 'info',
             metadata: { 
-                trip_id: trip.id,
+                trip_id: trip.id, 
                 lat: location.lat,
                 lng: location.lng
             }
@@ -573,7 +601,7 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
              throw new Error("No se pudo guardar o notificar la ubicación.");
         }
 
-        onUpdateTrip({ ...trip, locationHistory: updatedHistory });
+        onUpdateTrip({ ...trip, locationHistory: updatedHistory, event_log: updatedEventLog });
         playSound('success');
         showToast('Ubicación Enviada', 'Tu ubicación se ha compartido con la Torre de Control.', 'success');
 
@@ -679,11 +707,21 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
         console.warn("No se pudo obtener la ubicación para la notificación:", geoErr);
       }
 
+      // Registrar Evento de Etapa con Fecha y Hora Exacta
+      const stageEvent = createTripEvent(
+          'ETAPA',
+          isTripFinished ? 'Viaje completado y bitácora cerrada' : `Avance de etapa: ${stageName}`,
+          user?.name || trip.plate,
+          overrideFinalOdometer ? `Odómetro final: ${overrideFinalOdometer} km` : `Etapa ${nextStepIndex}: ${stageName}`
+      );
+      const updatedEventLog = [...(trip.event_log || []), stageEvent];
+
       let updatePayload: any = { 
         current_stage: currentStageAsNumber, 
         destinos_lista: updatedDestinations, 
         status: newStatus,
-        locationhistory: updatedHistory
+        locationhistory: updatedHistory,
+        event_log: updatedEventLog
       };
 
       if (isTripFinished && overrideFinalOdometer) {
@@ -709,7 +747,13 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
         metadata: locationMetadata
       });
 
-      const updatedTrip: Trip = { ...trip, currentStageIndex: nextStepIndex, destinations: updatedDestinations, status: newStatus };
+      const updatedTrip: Trip = { 
+        ...trip, 
+        currentStageIndex: nextStepIndex, 
+        destinations: updatedDestinations, 
+        status: newStatus,
+        event_log: updatedEventLog
+      };
       if (isTripFinished && overrideFinalOdometer) {
           updatedTrip.odometerEnd = overrideFinalOdometer;
       }
@@ -776,10 +820,20 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
             console.warn("No location for start trip", e);
         }
 
+        // Registrar Evento de Inicio con Fecha y Hora Exacta
+        const startEvent = createTripEvent(
+            'ETAPA',
+            `Inicio de Ruta confirmado con odómetro en ${initialOdometer} km`,
+            user?.name || trip.plate,
+            'Etapa 1: Inicio de viaje'
+        );
+        const updatedEventLog = [...(trip.event_log || []), startEvent];
+
         const { error } = await supabase.from('viajes').update({ 
             current_stage: nextStepIndex,
             status: newStatus,
-            locationhistory: updatedHistory
+            locationhistory: updatedHistory,
+            event_log: updatedEventLog
         }).eq('id', trip.id);
 
         if (error) throw error;
@@ -792,7 +846,7 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
             metadata: locationMetadata
         });
         
-        onUpdateTrip({ ...trip, currentStageIndex: nextStepIndex, status: newStatus });
+        onUpdateTrip({ ...trip, currentStageIndex: nextStepIndex, status: newStatus, event_log: updatedEventLog });
         playSound('success');
         showToast('Viaje Iniciado', 'El odómetro ha sido confirmado y el viaje ha comenzado.', 'success');
 
@@ -848,12 +902,27 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
         });
       }
 
+      // Registrar Evento de Evidencia con Fecha y Hora Exacta
+      const evidEvent = createTripEvent(
+          'EVIDENCIA',
+          `Evidencia fotográfica subida (${newEvidences.length} fotos)`,
+          user?.name || trip.plate,
+          `Etapa: ${TRIP_STAGES[trip.currentStageIndex]?.label || 'Ruta'}`
+      );
+      const updatedEventLog = [...(trip.event_log || []), evidEvent];
+
       const updatedEvidenceList = [...trip.evidence, ...newEvidences];
-      const updatedTrip = { ...trip, evidence: updatedEvidenceList, evidenceStatus: 'PENDING' as EvidenceStatus };
+      const updatedTrip = { 
+          ...trip, 
+          evidence: updatedEvidenceList, 
+          evidenceStatus: 'PENDING' as EvidenceStatus,
+          event_log: updatedEventLog
+      };
 
       await supabase.from('viajes').update({ 
           evidence: updatedEvidenceList,
-          evidence_status: 'PENDING' 
+          evidence_status: 'PENDING',
+          event_log: updatedEventLog
       }).eq('id', trip.id);
 
       const evidenceImageUrl = newEvidences.length > 0 ? newEvidences[0].url : undefined;

@@ -2,6 +2,7 @@ import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Trip, Unit, Operator, ExpenseRecord, TripStatus } from './types';
+import { formatFullDateTime, buildFullTripEventLog } from './utils';
 
 // Utilidad para formatear fechas en nombres de archivo (AAAAMMDD_HHMM)
 const getFormattedTimestamp = (): string => {
@@ -137,27 +138,78 @@ export const exportDataToExcel = (data: Record<string, any>[], filePrefix: strin
   XLSX.writeFile(workbook, fileName);
 };
 
+// Función para descargar Excel con múltiples hojas (Hojas de Datos + Hoja de Auditoría de Eventos)
+export const exportMultiSheetExcel = (
+  sheets: { name: string; data: Record<string, any>[] }[],
+  filePrefix: string
+) => {
+  const workbook = XLSX.utils.book_new();
+  let addedSheets = 0;
+
+  sheets.forEach(({ name, data }) => {
+    if (data && data.length > 0) {
+      const worksheet = XLSX.utils.json_to_sheet(data);
+      const colWidths = Object.keys(data[0] || {}).map(key => {
+        const maxValLen = Math.max(
+          key.length,
+          ...data.map(row => (row[key] !== null && row[key] !== undefined ? String(row[key]).length : 0))
+        );
+        return { wch: Math.min(Math.max(maxValLen + 2, 12), 50) };
+      });
+      worksheet['!cols'] = colWidths;
+      XLSX.utils.book_append_sheet(workbook, worksheet, name);
+      addedSheets++;
+    }
+  });
+
+  if (addedSheets === 0) {
+    alert('No hay registros para exportar.');
+    return;
+  }
+
+  const fileName = `${filePrefix}_${getFormattedTimestamp()}.xlsx`;
+  XLSX.writeFile(workbook, fileName);
+};
+
 // ==========================================
 // 1. MÓDULO BITÁCORAS (VIAJES ACTIVOS)
 // ==========================================
 
 export const exportBitacorasExcel = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
+  const auditEventsData: Record<string, any>[] = [];
+
   const data = trips.map(t => {
     const totalExpenses = getTripTotalExpenses(t);
     const destStr = t.destinations && t.destinations.length > 0
       ? t.destinations.map(d => d.name || d.destinationAddress).join(' -> ')
       : t.destination;
     
+    const opName = getOperatorName(t.operator_id, operators);
+    const tripEvents = buildFullTripEventLog(t, opName);
+    const lastEvent = tripEvents.length > 0 ? tripEvents[tripEvents.length - 1] : null;
+
+    tripEvents.forEach(evt => {
+      auditEventsData.push({
+        'Código de Viaje': t.code,
+        'Fecha y Hora Exacta': evt.dateFormatted || formatFullDateTime(evt.timestamp),
+        'Tipo de Evento': evt.eventType,
+        'Usuario / Responsable': evt.user,
+        'Descripción del Evento': evt.description,
+        'Detalles': evt.details || ''
+      });
+    });
+
     return {
       'Código': t.code,
-      'Fecha': t.date || 'N/A',
+      'Fecha Asignación (Día y Hora)': t.created_at ? formatFullDateTime(t.created_at) : (t.date || 'N/A'),
+      'Fecha Programada': t.date || 'N/A',
+      'Cita / Horario': t.appointment || 'N/A',
       'Cliente': t.client || 'N/A',
       'Proyecto': t.project || 'N/A',
-      'Operador': getOperatorName(t.operator_id, operators),
+      'Operador': opName,
       'Unidad / Placa': t.plate || 'N/A',
       'Origen': t.origin || 'N/A',
       'Destino': destStr || 'N/A',
-      'Cita / Horario': t.appointment || 'N/A',
       'Estatus': t.status,
       'Odómetro Inicial': t.odometerStart || 0,
       'Odómetro Actual': t.odometerEnd || t.odometerStart || 0,
@@ -165,12 +217,16 @@ export const exportBitacorasExcel = (trips: Trip[], operators: Operator[], dateR
       'Gastos Depositados ($)': Number(t.gastosDepositados || 0).toFixed(2),
       'Combustible Asignado ($)': Number(t.combustibleAsignado || 0).toFixed(2),
       'Gastos Extras ($)': totalExpenses.toFixed(2),
-      'Tiene Incidencia': t.hasIncident ? 'SÍ' : 'NO'
+      'Total Eventos Registrados': tripEvents.length,
+      'Último Evento': lastEvent ? `${lastEvent.dateFormatted}: ${lastEvent.description}` : 'Sin actividad registrada'
     };
   });
 
   const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
-  exportDataToExcel(data, `TLS_Bitacoras_Activas${cleanLabel}`, 'Bitacoras');
+  exportMultiSheetExcel([
+    { name: 'Bitacoras', data },
+    { name: 'Auditoría de Eventos', data: auditEventsData }
+  ], `TLS_Bitacoras_Activas${cleanLabel}`);
 };
 
 export const exportBitacorasPDF = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
@@ -213,20 +269,23 @@ export const exportBitacorasPDF = (trips: Trip[], operators: Operator[], dateRan
   doc.text(`Incidencias: ${totalIncidencias}`, 120, 34);
   doc.text(`Total Gastos Registrados: $${totalGastos.toFixed(2)}`, 180, 34);
 
-  // Table Data
-  const head = [['Código', 'Fecha', 'Cliente', 'Operador', 'Placa', 'Ruta', 'Estatus', 'Odom. Inicial', 'Odom. Final', 'Gastos ($)']];
-  const body = trips.map(t => [
-    t.code,
-    t.date || 'N/A',
-    t.client || 'N/A',
-    getOperatorName(t.operator_id, operators),
-    t.plate || 'N/A',
-    `${t.origin} -> ${t.destinations && t.destinations.length > 0 ? t.destinations[0].name : t.destination}`,
-    t.status,
-    t.odometerStart ? `${t.odometerStart} km` : '-',
-    t.odometerEnd ? `${t.odometerEnd} km` : '-',
-    `$${getTripTotalExpenses(t).toFixed(2)}`
-  ]);
+  // Table Data con Fecha y Hora
+  const head = [['Código', 'Fecha / Creación', 'Cliente', 'Operador', 'Placa', 'Ruta', 'Estatus', 'Odom. Inicial', 'Odom. Final', 'Gastos ($)']];
+  const body = trips.map(t => {
+    const dateTime = t.created_at ? formatFullDateTime(t.created_at) : (t.date || 'N/A');
+    return [
+      t.code,
+      dateTime,
+      t.client || 'N/A',
+      getOperatorName(t.operator_id, operators),
+      t.plate || 'N/A',
+      `${t.origin} -> ${t.destinations && t.destinations.length > 0 ? t.destinations[0].name : t.destination}`,
+      t.status,
+      t.odometerStart ? `${t.odometerStart} km` : '-',
+      t.odometerEnd ? `${t.odometerEnd} km` : '-',
+      `$${getTripTotalExpenses(t).toFixed(2)}`
+    ];
+  });
 
   autoTable(doc, {
     startY: 42,
@@ -258,18 +317,34 @@ export const exportBitacorasPDF = (trips: Trip[], operators: Operator[], dateRan
 // ==========================================
 
 export const exportHistoryExcel = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
+  const auditEventsData: Record<string, any>[] = [];
+
   const data = trips.map(t => {
     const kmRecorridos = Math.max(0, (t.odometerEnd || 0) - (t.odometerStart || 0));
     const extraCosts = getTripTotalExpenses(t);
     const combustible = Number(t.costoTotalCombustible || 0);
     const totalGeneral = combustible + extraCosts;
+    const opName = getOperatorName(t.operator_id, operators);
+    const tripEvents = buildFullTripEventLog(t, opName);
+
+    tripEvents.forEach(evt => {
+      auditEventsData.push({
+        'Código de Viaje': t.code,
+        'Fecha y Hora Exacta': evt.dateFormatted || formatFullDateTime(evt.timestamp),
+        'Tipo de Evento': evt.eventType,
+        'Usuario / Responsable': evt.user,
+        'Descripción del Evento': evt.description,
+        'Detalles': evt.details || ''
+      });
+    });
 
     return {
       'Código': t.code,
-      'Fecha': t.date || 'N/A',
+      'Fecha Creación (Día y Hora)': t.created_at ? formatFullDateTime(t.created_at) : (t.date || 'N/A'),
+      'Fecha Programada': t.date || 'N/A',
       'Cliente': t.client || 'N/A',
       'Proyecto': t.project || 'N/A',
-      'Operador': getOperatorName(t.operator_id, operators),
+      'Operador': opName,
       'Placa': t.plate || 'N/A',
       'Origen': t.origin || 'N/A',
       'Destino': t.destination || (t.destinations?.[0]?.name ?? 'N/A'),
@@ -279,12 +354,16 @@ export const exportHistoryExcel = (trips: Trip[], operators: Operator[], dateRan
       'Costo Combustible ($)': combustible.toFixed(2),
       'Gastos Extras ($)': extraCosts.toFixed(2),
       'Costo Total Viaje ($)': totalGeneral.toFixed(2),
-      'Estatus': t.status
+      'Estatus': t.status,
+      'Total Eventos Auditados': tripEvents.length
     };
   });
 
   const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
-  exportDataToExcel(data, `TLS_Historial_Viajes${cleanLabel}`, 'Historial');
+  exportMultiSheetExcel([
+    { name: 'Historial', data },
+    { name: 'Auditoría de Eventos', data: auditEventsData }
+  ], `TLS_Historial_Viajes${cleanLabel}`);
 };
 
 export const exportHistoryPDF = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
@@ -557,6 +636,7 @@ export interface FlatExpenseRow {
   operatorName: string;
   plate: string;
   dateStr: string;
+  dateTimeStr: string;
   timestamp: number;
   category: string;
   concept: string;
@@ -579,6 +659,7 @@ export const extractFlatExpenses = (trips: Trip[], operators: Operator[]): FlatE
 
     t.extraCosts.forEach(record => {
       const dateStr = record.timestamp ? new Date(record.timestamp).toLocaleDateString('es-MX') : t.date || 'N/A';
+      const dateTimeStr = record.timestamp ? formatFullDateTime(record.timestamp) : (t.date || 'N/A');
       const evidenceUrl = record.evidence && record.evidence.length > 0 ? record.evidence[0].url : undefined;
       const recTotal = Number(record.total) || 
         (record.items ? record.items.reduce((s, it) => s + (Number(it.amount) || 0), 0) : 0);
@@ -592,6 +673,7 @@ export const extractFlatExpenses = (trips: Trip[], operators: Operator[]): FlatE
             operatorName: opName,
             plate: t.plate || 'N/A',
             dateStr,
+            dateTimeStr,
             timestamp: record.timestamp || 0,
             category: record.category,
             concept: item.concept,
@@ -613,6 +695,7 @@ export const extractFlatExpenses = (trips: Trip[], operators: Operator[]): FlatE
           operatorName: opName,
           plate: t.plate || 'N/A',
           dateStr,
+          dateTimeStr,
           timestamp: record.timestamp || 0,
           category: record.category,
           concept: 'Gasto registrado',
@@ -631,7 +714,8 @@ export const extractFlatExpenses = (trips: Trip[], operators: Operator[]): FlatE
 export const exportExpensesExcel = (expenses: FlatExpenseRow[], dateRangeLabel?: string) => {
   const data = expenses.map(e => ({
     'Código de Viaje': e.tripCode,
-    'Fecha': e.dateStr,
+    'Fecha y Hora de Registro (Captura)': e.dateTimeStr || e.dateStr,
+    'Fecha Contable': e.dateStr,
     'Operador': e.operatorName,
     'Placa': e.plate,
     'Categoría': e.category,
@@ -687,7 +771,7 @@ export const exportExpensesPDF = (expenses: FlatExpenseRow[], dateRangeLabel?: s
   doc.text(`Gastos de Viaje: $${totalViaje.toFixed(2)}`, 140, 34);
   doc.text(`Mantenimiento: $${totalMant.toFixed(2)}`, 205, 34);
 
-  const head = [['Viaje', 'Fecha', 'Operador', 'Placa', 'Categoría', 'Concepto', 'Detalle Odom/Litros', 'Monto ($)', 'Evidencia']];
+  const head = [['Viaje', 'Fecha y Hora Registro', 'Operador', 'Placa', 'Categoría', 'Concepto', 'Detalle Odom/Litros', 'Monto ($)', 'Evidencia']];
   const body = expenses.map(e => {
     let detalle = '-';
     if (e.liters && e.pricePerLiter) detalle = `${e.liters}L @ $${e.pricePerLiter}`;
@@ -695,7 +779,7 @@ export const exportExpensesPDF = (expenses: FlatExpenseRow[], dateRangeLabel?: s
 
     return [
       e.tripCode,
-      e.dateStr,
+      e.dateTimeStr || e.dateStr,
       e.operatorName,
       e.plate,
       e.category,

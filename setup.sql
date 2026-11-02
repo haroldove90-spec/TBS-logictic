@@ -155,6 +155,9 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'scheduled_date') THEN
         ALTER TABLE viajes ADD COLUMN scheduled_date TEXT;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'event_log') THEN
+        ALTER TABLE viajes ADD COLUMN event_log JSONB DEFAULT '[]'::jsonb;
+    END IF;
 END $$;
 
 

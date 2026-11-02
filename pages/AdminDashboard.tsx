@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { TRIP_STAGES, MOCK_OPERATORS } from '../constants';
 import { Trip, TripStatus, EvidenceStatus, Evidence, LocationReport, TripDestination, ExpenseRecord, Unit, Operator } from '../types';
 import { supabase } from '../supabaseClient';
-import { sendPushNotification, playSound } from '../utils';
+import { sendPushNotification, playSound, createTripEvent, buildFullTripEventLog, formatFullDateTime } from '../utils';
 import { Siren, Search, Filter, CheckCircle, Clock, MapPin, Truck, AlertTriangle, Plus, X, Users, Save, Eye, ChevronRight, FileText, Link, ThumbsUp, ThumbsDown, Camera, AlertCircle, Folder, Download, ZoomIn, Image as ImageIcon, Archive, Map, Fuel, Loader, FileWarning, Paperclip, Check, Trash2, Navigation, Circle, CheckCircle2, Dot, Share2, Calendar, Building2, MessageSquare, Wallet, Wrench, Briefcase, FileJson, Hash, Gauge, Box, CreditCard, Pencil, UserCog, User, Lock, FileBadge, EyeOff, DollarSign, Database, ExternalLink, Copy, FileSpreadsheet } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -864,6 +864,42 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
             });
         }
 
+        // 5. LÍNEA DE TIEMPO Y AUDITORÍA DE EVENTOS (FECHA Y HORA EXACTA)
+        const allEvents = buildFullTripEventLog(trip, operatorName);
+        if (allEvents && allEvents.length > 0) {
+            yPos = (doc as any).lastAutoTable ? (doc as any).lastAutoTable.finalY + 8 : yPos + 8;
+            if (yPos + 35 > 280) { doc.addPage(); yPos = 20; }
+
+            doc.setFillColor(241, 245, 249);
+            doc.rect(14, yPos - 4, 182, 6, 'F');
+            doc.setFontSize(10);
+            doc.setFont("helvetica", "bold");
+            doc.text("5. AUDITORÍA Y LÍNEA DE TIEMPO DE EVENTOS (FECHA Y HORA EXACTA)", 16, yPos);
+            yPos += 8;
+
+            const eventRows = allEvents.map(evt => [
+                evt.dateFormatted || formatFullDateTime(evt.timestamp),
+                evt.description,
+                evt.user || 'Sistema',
+                evt.details || '-'
+            ]);
+
+            autoTable(doc, {
+                startY: yPos,
+                head: [['Fecha y Hora', 'Evento / Hito', 'Responsable', 'Detalle']],
+                body: eventRows,
+                theme: 'striped',
+                styles: { fontSize: 7, cellPadding: 2, valign: 'middle' },
+                headStyles: { fillColor: [15, 23, 42], textColor: [255, 255, 255], fontStyle: 'bold' },
+                columnStyles: {
+                    0: { fontStyle: 'bold', cellWidth: 32 },
+                    1: { cellWidth: 60 },
+                    2: { cellWidth: 35 },
+                    3: { cellWidth: 55 }
+                }
+            });
+        }
+
         doc.save(`Orden_Servicio_${trip.code}.pdf`);
         playSound('success');
 
@@ -1022,6 +1058,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
         } else {
             const tripId = generateUUID();
             
+            const creationEvent = createTripEvent(
+                'ASIGNACION',
+                `Viaje asignado a unidad ${newTrip.plate || 'S/N'} (${newTrip.destinations[0]?.name || 'Destino'})`,
+                'Torre de Control / Admin',
+                `Cliente: ${newTrip.client} | Origen: ${newTrip.origin}`
+            );
+
             const { error } = await supabase.from('viajes').insert({
                  id: tripId,
                  code: finalCode,
@@ -1041,6 +1084,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                  indicaciones_pdf_url: newTrip.indicaciones_pdf_url || null,
                  scheduled_date: newTrip.scheduledDate,
                  odometer_start: startOdometer || null,
+                 event_log: [creationEvent],
                  
                  gastos_depositados: newTrip.gastosDepositados ? parseFloat(newTrip.gastosDepositados) : null,
                  combustible_asignado: newTrip.combustibleAsignado ? parseFloat(newTrip.combustibleAsignado) : null,
@@ -2886,6 +2930,60 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                             })}
                         </div>
                     </div>
+
+                    {/* SECCIÓN VISUAL DE AUDITORÍA Y LÍNEA DE TIEMPO (FECHA Y HORA EXACTA) */}
+                    {(() => {
+                        const monitorEvents = buildFullTripEventLog(
+                            selectedTripForMonitor, 
+                            operatorsList.find(op => op.plate === selectedTripForMonitor.plate)?.name
+                        );
+                        if (!monitorEvents || monitorEvents.length === 0) return null;
+
+                        return (
+                            <div className="bg-white m-5 mt-0 rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                                <div className="bg-slate-900 text-white px-4 py-2.5 flex justify-between items-center">
+                                    <div className="flex items-center space-x-2">
+                                        <Clock className="h-4 w-4 text-amber-400" />
+                                        <h3 className="text-xs font-black uppercase tracking-wider">Historial de Eventos y Trazabilidad</h3>
+                                    </div>
+                                    <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded font-bold">
+                                        {monitorEvents.length} eventos
+                                    </span>
+                                </div>
+                                <div className="divide-y divide-slate-100 max-h-64 overflow-y-auto">
+                                    {monitorEvents.map((evt, eIdx) => (
+                                        <div key={evt.id || eIdx} className="p-3 hover:bg-slate-50 transition-colors">
+                                            <div className="flex justify-between items-start gap-2 mb-1">
+                                                <div className="flex items-center gap-2">
+                                                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded uppercase ${
+                                                        evt.eventType === 'ASIGNACION' ? 'bg-blue-100 text-blue-700' :
+                                                        evt.eventType === 'ACEPTACION' ? 'bg-emerald-100 text-emerald-700' :
+                                                        evt.eventType === 'ETAPA' ? 'bg-amber-100 text-amber-700' :
+                                                        evt.eventType === 'EVIDENCIA' ? 'bg-purple-100 text-purple-700' :
+                                                        evt.eventType === 'GASTO' ? 'bg-red-100 text-red-700' :
+                                                        evt.eventType === 'UBICACION' ? 'bg-cyan-100 text-cyan-700' :
+                                                        'bg-slate-100 text-slate-700'
+                                                    }`}>
+                                                        {evt.eventType}
+                                                    </span>
+                                                    <span className="text-[11px] font-bold text-slate-800">
+                                                        {evt.description}
+                                                    </span>
+                                                </div>
+                                                <span className="text-[10px] font-black text-blue-600 shrink-0 font-mono">
+                                                    {evt.dateFormatted || formatFullDateTime(evt.timestamp)}
+                                                </span>
+                                            </div>
+                                            <div className="flex justify-between items-center text-[10px] text-slate-400 pl-1">
+                                                <span>Por: <strong className="text-slate-600">{evt.user || 'Sistema'}</strong></span>
+                                                {evt.details && <span className="text-slate-500 italic max-w-[200px] truncate">{evt.details}</span>}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    })()}
                 </div>
             </div>
         </div>
