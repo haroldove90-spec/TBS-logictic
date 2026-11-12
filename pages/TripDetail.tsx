@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Trip, TripStatus, EvidenceStatus, Evidence, LocationReport, TripDestination, ExpenseCategory, ExpenseItem, ExpenseRecord, User } from '../types';
 import { TRIP_STAGES } from '../constants';
 import { supabase, checkStorageBucket } from '../supabaseClient';
-import { sendPushNotification, playSound, processWatermark, getCurrentLocation, createTripEvent } from '../utils';
+import { sendPushNotification, playSound, processWatermark, getCurrentLocation, createTripEvent, formatStageDateTime, getStageFormattedDate } from '../utils';
 import { 
   ArrowLeft, Check, BellRing, MapPin, AlertTriangle, 
   Navigation, Camera, Loader, Fuel, Clock, RotateCcw, 
@@ -356,7 +356,16 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
 
   const handleSelectSubCategory = (sub: string) => {
       setSubCategory(sub);
-      setExpenseRows([{ concept: '', amount: 0 }]); 
+      const defaultConcepts: Record<string, string> = {
+        'HOTEL O PENSIÓN': 'Hotel / Pensión',
+        'TALACHA': 'Talacha',
+        'ESTADÍAS': 'Estadías',
+        'PERMISO / FITOSANITARIA': 'Permiso / Fitosanitaria',
+        'ESTACIONAMIENTO': 'Estacionamiento',
+        'TRÁNSITO': 'Tránsito',
+        'CASETAS IAVE': 'Casetas IAVE'
+      };
+      setExpenseRows([{ concept: defaultConcepts[sub] || '', amount: 0 }]); 
       setExpenseEvidence([]);
       setFuelData({ currentOdometer: '', liters: '', pricePerLiter: '' });
   };
@@ -668,14 +677,29 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
         }
       }
 
+      const nowTs = Date.now();
+      const formattedNow = formatStageDateTime(nowTs);
+      const updatedStageTimestamps = { ...(trip.stage_timestamps || {}), [index]: nowTs };
+      const updatedStageDates = { ...(trip.stage_dates || {}), [index]: formattedNow };
+
       const currentStageAsNumber = Number(nextStepIndex);
       let newStatus = trip.status;
-      const isTripFinished = nextStepIndex === 7;
+      const isTripFinished = nextStepIndex === 7 || index === 6;
 
+      // Actualización de Estatus solicitada por el cliente:
+      // - Por Aceptar
+      // - En Curso
+      // - Entregando (Operador presione Con Cliente)
+      // - Regresando vacío (Operador presione DESCARGADO)
+      // - Fin de viaje
       if (isTripFinished) {
-        newStatus = TripStatus.COMPLETED;
-      } else if (nextStepIndex === 1 && trip.status === TripStatus.ACCEPTED) {
-        newStatus = TripStatus.IN_TRANSIT;
+        newStatus = TripStatus.COMPLETED; // 'Fin de Viaje'
+      } else if (index === 4) {
+        newStatus = TripStatus.DELIVERING; // 'Entregando'
+      } else if (index === 5) {
+        newStatus = TripStatus.RETURNING_EMPTY; // 'Regresando Vacío'
+      } else if (nextStepIndex >= 1) {
+        newStatus = TripStatus.IN_TRANSIT; // 'En Curso'
       }
 
       const stageName = isTripFinished ? 'Fin de viaje' : TRIP_STAGES[nextStepIndex]?.label || 'Siguiente Etapa';
@@ -712,7 +736,8 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
           'ETAPA',
           isTripFinished ? 'Viaje completado y bitácora cerrada' : `Avance de etapa: ${stageName}`,
           user?.name || trip.plate,
-          overrideFinalOdometer ? `Odómetro final: ${overrideFinalOdometer} km` : `Etapa ${nextStepIndex}: ${stageName}`
+          overrideFinalOdometer ? `Odómetro final: ${overrideFinalOdometer} km` : `Etapa ${nextStepIndex}: ${stageName}`,
+          nowTs
       );
       const updatedEventLog = [...(trip.event_log || []), stageEvent];
 
@@ -721,7 +746,9 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
         destinos_lista: updatedDestinations, 
         status: newStatus,
         locationhistory: updatedHistory,
-        event_log: updatedEventLog
+        event_log: updatedEventLog,
+        stage_timestamps: updatedStageTimestamps,
+        stage_dates: updatedStageDates
       };
 
       if (isTripFinished && overrideFinalOdometer) {
@@ -752,8 +779,14 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
         currentStageIndex: nextStepIndex, 
         destinations: updatedDestinations, 
         status: newStatus,
-        event_log: updatedEventLog
+        event_log: updatedEventLog,
+        stage_timestamps: updatedStageTimestamps,
+        stage_dates: updatedStageDates
       };
+      if (isTripFinished && overrideFinalOdometer) {
+          updatedTrip.odometerEnd = overrideFinalOdometer;
+      }
+      onUpdateTrip(updatedTrip);
       if (isTripFinished && overrideFinalOdometer) {
           updatedTrip.odometerEnd = overrideFinalOdometer;
       }
@@ -820,12 +853,18 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
             console.warn("No location for start trip", e);
         }
 
+        const stage0Ts = Date.now();
+        const stage0Date = formatStageDateTime(stage0Ts);
+        const updatedStageTimestamps = { ...(trip.stage_timestamps || {}), 0: stage0Ts };
+        const updatedStageDates = { ...(trip.stage_dates || {}), 0: stage0Date };
+
         // Registrar Evento de Inicio con Fecha y Hora Exacta
         const startEvent = createTripEvent(
             'ETAPA',
             `Inicio de Ruta confirmado con odómetro en ${initialOdometer} km`,
             user?.name || trip.plate,
-            'Etapa 1: Inicio de viaje'
+            'Etapa 1: Comenzando viaje',
+            stage0Ts
         );
         const updatedEventLog = [...(trip.event_log || []), startEvent];
 
@@ -833,7 +872,9 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
             current_stage: nextStepIndex,
             status: newStatus,
             locationhistory: updatedHistory,
-            event_log: updatedEventLog
+            event_log: updatedEventLog,
+            stage_timestamps: updatedStageTimestamps,
+            stage_dates: updatedStageDates
         }).eq('id', trip.id);
 
         if (error) throw error;
@@ -846,7 +887,14 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
             metadata: locationMetadata
         });
         
-        onUpdateTrip({ ...trip, currentStageIndex: nextStepIndex, status: newStatus, event_log: updatedEventLog });
+        onUpdateTrip({ 
+            ...trip, 
+            currentStageIndex: nextStepIndex, 
+            status: newStatus, 
+            event_log: updatedEventLog,
+            stage_timestamps: updatedStageTimestamps,
+            stage_dates: updatedStageDates
+        });
         playSound('success');
         showToast('Viaje Iniciado', 'El odómetro ha sido confirmado y el viaje ha comenzado.', 'success');
 
@@ -1375,6 +1423,18 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
                                             )}
                                             </div>
                                         </div>
+                                        {(() => {
+                                            const stageDate = getStageFormattedDate(trip, index);
+                                            if (stageDate && stageDate !== '-') {
+                                                return (
+                                                    <div className="text-right ml-2 shrink-0">
+                                                        <span className="text-[10px] font-mono font-bold text-slate-500 block leading-tight">{stageDate.split(' / ')[0]}</span>
+                                                        <span className="text-[10px] font-mono font-black text-slate-800 block leading-tight">{stageDate.split(' / ')[1]}</span>
+                                                    </div>
+                                                );
+                                            }
+                                            return null;
+                                        })()}
                                         </button>
 
                                         {isCurrent && isEvidenceRequired && (
@@ -1469,6 +1529,18 @@ export const TripDetail: React.FC<TripDetailProps> = ({ trip, onBack, onUpdateTr
                                         <PlusCircle className="h-8 w-8 text-green-600 mb-2"/>
                                         <span className="text-xs font-black text-green-800 uppercase text-center">Otros Gastos</span>
                                     </button>
+                                    <div className="col-span-2 pt-2 border-t border-green-100">
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2 text-center">Conceptos Específicos (Base de Datos)</p>
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                            <button type="button" onClick={() => handleSelectSubCategory('CASETAS IAVE')} className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg hover:bg-green-50 hover:border-green-300 text-[11px] font-black text-slate-700 uppercase text-center transition-colors">Casetas IAVE</button>
+                                            <button type="button" onClick={() => handleSelectSubCategory('HOTEL O PENSIÓN')} className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg hover:bg-green-50 hover:border-green-300 text-[11px] font-black text-slate-700 uppercase text-center transition-colors">Hotel / Pensión</button>
+                                            <button type="button" onClick={() => handleSelectSubCategory('TALACHA')} className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg hover:bg-green-50 hover:border-green-300 text-[11px] font-black text-slate-700 uppercase text-center transition-colors">Talacha</button>
+                                            <button type="button" onClick={() => handleSelectSubCategory('ESTADÍAS')} className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg hover:bg-green-50 hover:border-green-300 text-[11px] font-black text-slate-700 uppercase text-center transition-colors">Estadías</button>
+                                            <button type="button" onClick={() => handleSelectSubCategory('PERMISO / FITOSANITARIA')} className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg hover:bg-green-50 hover:border-green-300 text-[11px] font-black text-slate-700 uppercase text-center transition-colors">Permiso / Fito</button>
+                                            <button type="button" onClick={() => handleSelectSubCategory('ESTACIONAMIENTO')} className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg hover:bg-green-50 hover:border-green-300 text-[11px] font-black text-slate-700 uppercase text-center transition-colors">Estacionamiento</button>
+                                            <button type="button" onClick={() => handleSelectSubCategory('TRÁNSITO')} className="col-span-2 sm:col-span-3 p-2.5 bg-slate-50 border border-slate-200 rounded-lg hover:bg-green-50 hover:border-green-300 text-[11px] font-black text-slate-700 uppercase text-center transition-colors">Tránsito</button>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
                         </div>

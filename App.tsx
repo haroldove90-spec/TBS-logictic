@@ -188,6 +188,8 @@ const App: React.FC = () => {
             locationHistory: t.locationhistory || [],
             extraCosts: t.extra_costs || [],
             event_log: t.event_log || [],
+            stage_timestamps: t.stage_timestamps || {},
+            stage_dates: t.stage_dates || {},
             created_at: t.created_at,
             odometerStart: t.odometer_start ? Number(t.odometer_start) : undefined,
             odometerEnd: t.odometer_end ? Number(t.odometer_end) : undefined,
@@ -196,7 +198,13 @@ const App: React.FC = () => {
             combustibleAsignado: t.combustible_asignado ? Number(t.combustible_asignado) : undefined,
             precioPorLitro: t.precio_por_litro ? Number(t.precio_por_litro) : undefined,
             costoTotalCombustible: t.costo_total_combustible ? Number(t.costo_total_combustible) : undefined,
-            kmEstimados: t.km_estimados ? Number(t.km_estimados) : undefined
+            kmEstimados: t.km_estimados ? Number(t.km_estimados) : undefined,
+            folioCliente: t.folio_cliente || '',
+            clienteDescarga: t.cliente_descarga || '',
+            linea: t.linea || 'TBS',
+            casetasIave: t.casetas_iave ? Number(t.casetas_iave) : 0,
+            rendimientoEsperado: t.rendimiento_esperado ? Number(t.rendimiento_esperado) : undefined,
+            observaciones: t.observaciones || ''
           }));
 
           const uniqueTrips = Array.from(new Map(mappedTrips.map(t => [t.id, t])).values());
@@ -280,7 +288,13 @@ const App: React.FC = () => {
                     combustibleAsignado: newTripData.combustible_asignado ? Number(newTripData.combustible_asignado) : undefined,
                     precioPorLitro: newTripData.precio_por_litro ? Number(newTripData.precio_por_litro) : undefined,
                     costoTotalCombustible: newTripData.costo_total_combustible ? Number(newTripData.costo_total_combustible) : undefined,
-                    kmEstimados: newTripData.km_estimados ? Number(newTripData.km_estimados) : undefined
+                    kmEstimados: newTripData.km_estimados ? Number(newTripData.km_estimados) : undefined,
+                    folioCliente: newTripData.folio_cliente || '',
+                    clienteDescarga: newTripData.cliente_descarga || '',
+                    linea: newTripData.linea || 'TBS',
+                    casetasIave: newTripData.casetas_iave ? Number(newTripData.casetas_iave) : 0,
+                    rendimientoEsperado: newTripData.rendimiento_esperado ? Number(newTripData.rendimiento_esperado) : undefined,
+                    observaciones: newTripData.observaciones || ''
                 };
 
                 setNewlyAssignedTrip(mappedTrip);

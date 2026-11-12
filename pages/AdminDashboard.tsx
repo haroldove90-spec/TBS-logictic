@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { TRIP_STAGES, MOCK_OPERATORS } from '../constants';
 import { Trip, TripStatus, EvidenceStatus, Evidence, LocationReport, TripDestination, ExpenseRecord, Unit, Operator } from '../types';
 import { supabase } from '../supabaseClient';
-import { sendPushNotification, playSound, createTripEvent, buildFullTripEventLog, formatFullDateTime } from '../utils';
+import { sendPushNotification, playSound, createTripEvent, buildFullTripEventLog, formatFullDateTime, getStageFormattedDate } from '../utils';
 import { Siren, Search, Filter, CheckCircle, Clock, MapPin, Truck, AlertTriangle, Plus, X, Users, Save, Eye, ChevronRight, FileText, Link, ThumbsUp, ThumbsDown, Camera, AlertCircle, Folder, Download, ZoomIn, Image as ImageIcon, Archive, Map, Fuel, Loader, FileWarning, Paperclip, Check, Trash2, Navigation, Circle, CheckCircle2, Dot, Share2, Calendar, Building2, MessageSquare, Wallet, Wrench, Briefcase, FileJson, Hash, Gauge, Box, CreditCard, Pencil, UserCog, User, Lock, FileBadge, EyeOff, DollarSign, Database, ExternalLink, Copy, FileSpreadsheet } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -17,6 +17,7 @@ import {
   exportOperatorsPDF,
   exportExpensesExcel,
   exportExpensesPDF,
+  exportMasterDatabaseExcel,
   extractFlatExpenses,
   FlatExpenseRow,
   getDateRange,
@@ -92,6 +93,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
   const [customDateStart, setCustomDateStart] = useState<string>('');
   const [customDateEnd, setCustomDateEnd] = useState<string>('');
 
+  // Filtro por estatus de viaje
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
+
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [showDbPassword, setShowDbPassword] = useState(false);
   const [copiedDbText, setCopiedDbText] = useState<string | null>(null);
@@ -150,6 +154,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
     combustibleAsignado: '',
     precioPorLitro: '',
     kmEstimados: '',
+    folioCliente: '',
+    clienteDescarga: '',
+    linea: 'TBS',
+    casetasIave: '',
+    rendimientoEsperado: '',
+    observaciones: '',
     destinations: [
       { id: Date.now().toString(), name: '', mapsLink: '', destinationAddress: '', date: '', appointment: '', currentStageIndex: 0, status: 'PENDING' as const, instructions: '', instructions_pdf_url: '', tripNumber: '' }
     ]
@@ -161,7 +171,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
     plate: '', 
     type: 'Camioneta', 
     box_type: 'Caja Seca',
-    current_odometer: '' 
+    current_odometer: '',
+    expected_yield: '' 
   });
   const [unitsList, setUnitsList] = useState<Unit[]>([]);
   const [editingUnitId, setEditingUnitId] = useState<string | null>(null);
@@ -226,6 +237,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
             type: unitData.type,
             box_type: unitData.box_type,
             current_odometer: unitData.current_odometer ? parseFloat(unitData.current_odometer) : 0,
+            expected_yield: unitData.expected_yield ? parseFloat(unitData.expected_yield) : null,
             status: 'AVAILABLE'
           };
 
@@ -236,7 +248,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                       plate: unitData.plate,
                       type: unitData.type,
                       box_type: unitData.box_type,
-                      current_odometer: payload.current_odometer
+                      current_odometer: payload.current_odometer,
+                      expected_yield: payload.expected_yield
                   })
                   .eq('id', editingUnitId);
 
@@ -250,7 +263,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
               alert("✅ Unidad registrada correctamente");
           }
           
-          setUnitData({ eco: '', plate: '', type: 'Camioneta', box_type: 'Caja Seca', current_odometer: '' });
+          setUnitData({ eco: '', plate: '', type: 'Camioneta', box_type: 'Caja Seca', current_odometer: '', expected_yield: '' });
           playSound('success');
           const { data } = await supabase.from('unidades').select('*').order('created_at', { ascending: false });
           if (data) setUnitsList(data as Unit[]);
@@ -270,14 +283,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
         plate: unit.plate, 
         type: unit.type, 
         box_type: unit.box_type,
-        current_odometer: unit.current_odometer ? unit.current_odometer.toString() : ''
+        current_odometer: unit.current_odometer ? unit.current_odometer.toString() : '',
+        expected_yield: unit.expected_yield ? unit.expected_yield.toString() : ''
       });
       setEditingUnitId(unit.id);
       window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleCancelEditUnit = () => {
-      setUnitData({ eco: '', plate: '', type: 'Camioneta', box_type: 'Caja Seca', current_odometer: '' });
+      setUnitData({ eco: '', plate: '', type: 'Camioneta', box_type: 'Caja Seca', current_odometer: '', expected_yield: '' });
       setEditingUnitId(null);
   };
 
@@ -466,15 +480,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
   };
 
   const handleApproveEvidence = async (trip: Trip) => {
-    let newStatus = trip.status;
-    if (trip.currentStageIndex >= 6 || trip.status === TripStatus.COMPLETED) {
-         newStatus = TripStatus.COMPLETED;
-    }
+    const newStatus = TripStatus.REVIEWED;
+    const approveTs = Date.now();
+    const stageName = TRIP_STAGES[trip.currentStageIndex]?.label || `Etapa ${trip.currentStageIndex}`;
 
-    const updatedTrip = { 
+    // Registrar Evento en la Línea de Tiempo y Auditoría
+    const approveEvent = createTripEvent(
+        'EVIDENCIA',
+        `Evidencias revisadas y aprobadas por el administrador (${stageName})`,
+        'Torre de Control / Admin',
+        `Estatus actualizado a: Revisado | Validación de fotos exitosa`,
+        approveTs
+    );
+    const updatedEventLog = [...(trip.event_log || []), approveEvent];
+
+    const updatedTrip: Trip = { 
         ...trip, 
         evidenceStatus: 'APPROVED' as EvidenceStatus,
         status: newStatus,
+        event_log: updatedEventLog,
         rejectionReason: undefined
     };
 
@@ -482,7 +506,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
         .from('viajes')
         .update({ 
             evidence_status: 'APPROVED',
-            status: newStatus 
+            status: newStatus,
+            event_log: updatedEventLog
         })
         .eq('id', trip.id);
     
@@ -494,7 +519,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
         type: 'success'
     });
 
-    if (error) return;
+    if (error) {
+        console.error("Error al aprobar evidencia en Supabase:", error);
+        return;
+    }
 
     onUpdateTrip(updatedTrip);
     setSelectedTripForMonitor(updatedTrip);
@@ -502,15 +530,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
   };
 
   const handleRejectEvidence = async (trip: Trip, reason: string) => {
-    const updatedTrip = { 
+    const rejectTs = Date.now();
+    const stageName = TRIP_STAGES[trip.currentStageIndex]?.label || `Etapa ${trip.currentStageIndex}`;
+
+    // Registrar Evento de Rechazo en la Línea de Tiempo
+    const rejectEvent = createTripEvent(
+        'EVIDENCIA',
+        `Evidencias rechazadas por el administrador: ${reason}`,
+        'Torre de Control / Admin',
+        `Motivo: ${reason} | Etapa: ${stageName}`,
+        rejectTs
+    );
+    const updatedEventLog = [...(trip.event_log || []), rejectEvent];
+
+    const updatedTrip: Trip = { 
         ...trip, 
         evidenceStatus: 'REJECTED' as EvidenceStatus, 
-        rejectionReason: reason 
+        rejectionReason: reason,
+        event_log: updatedEventLog
     };
 
     const { error } = await supabase
         .from('viajes')
-        .update({ evidence_status: 'REJECTED' })
+        .update({ 
+            evidence_status: 'REJECTED',
+            event_log: updatedEventLog
+        })
         .eq('id', trip.id);
 
     await supabase.from('notificaciones').insert({
@@ -931,6 +976,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
       combustibleAsignado: trip.combustibleAsignado ? trip.combustibleAsignado.toString() : '',
       precioPorLitro: trip.precioPorLitro ? trip.precioPorLitro.toString() : '',
       kmEstimados: trip.kmEstimados ? trip.kmEstimados.toString() : '',
+      folioCliente: trip.folioCliente || '',
+      clienteDescarga: trip.clienteDescarga || '',
+      linea: trip.linea || 'TBS',
+      casetasIave: trip.casetasIave ? trip.casetasIave.toString() : '',
+      rendimientoEsperado: trip.rendimientoEsperado ? trip.rendimientoEsperado.toString() : '',
+      observaciones: trip.observaciones || '',
       destinations: trip.destinations && trip.destinations.length > 0 ? trip.destinations : [{ id: Date.now().toString(), name: trip.destination, mapsLink: '', destinationAddress: '', date: '', appointment: '', currentStageIndex: 0, status: 'PENDING' as const, instructions: '', instructions_pdf_url: '', tripNumber: '' }]
     });
     setEditingTripId(trip.id);
@@ -958,6 +1009,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
       combustibleAsignado: '',
       precioPorLitro: '',
       kmEstimados: '',
+      folioCliente: '',
+      clienteDescarga: '',
+      linea: 'TBS',
+      casetasIave: '',
+      rendimientoEsperado: '',
+      observaciones: '',
       destinations: [{ id: Date.now().toString(), name: '', mapsLink: '', destinationAddress: '', currentStageIndex: 0, status: 'PENDING' as const, instructions: '', instructions_pdf_url: '', tripNumber: '' }]
     });
     setEditingTripId(null);
@@ -992,7 +1049,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
           ...prev, 
           plate: selectedPlate,
           odometerStart: lastOdometer,
-          odometerAnterior: lastOdometer
+          odometerAnterior: lastOdometer,
+          rendimientoEsperado: prev.rendimientoEsperado || (selectedUnit?.expected_yield ? selectedUnit.expected_yield.toString() : '')
       }));
   };
 
@@ -1046,7 +1104,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                  combustible_asignado: newTrip.combustibleAsignado ? parseFloat(newTrip.combustibleAsignado) : null,
                  precio_por_litro: newTrip.precioPorLitro ? parseFloat(newTrip.precioPorLitro) : null,
                  costo_total_combustible: (newTrip.combustibleAsignado && newTrip.precioPorLitro) ? (parseFloat(newTrip.combustibleAsignado) * parseFloat(newTrip.precioPorLitro)) : null,
-                 km_estimados: newTrip.kmEstimados ? parseFloat(newTrip.kmEstimados) : null
+                 km_estimados: newTrip.kmEstimados ? parseFloat(newTrip.kmEstimados) : null,
+                 folio_cliente: newTrip.folioCliente || null,
+                 cliente_descarga: newTrip.clienteDescarga || null,
+                 linea: newTrip.linea || 'TBS',
+                 casetas_iave: newTrip.casetasIave ? parseFloat(newTrip.casetasIave) : 0,
+                 rendimiento_esperado: newTrip.rendimientoEsperado ? parseFloat(newTrip.rendimientoEsperado) : null,
+                 observaciones: newTrip.observaciones || null
             }).eq('id', editingTripId);
 
             if (error) {
@@ -1090,7 +1154,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                  combustible_asignado: newTrip.combustibleAsignado ? parseFloat(newTrip.combustibleAsignado) : null,
                  precio_por_litro: newTrip.precioPorLitro ? parseFloat(newTrip.precioPorLitro) : null,
                  costo_total_combustible: (newTrip.combustibleAsignado && newTrip.precioPorLitro) ? (parseFloat(newTrip.combustibleAsignado) * parseFloat(newTrip.precioPorLitro)) : null,
-                 km_estimados: newTrip.kmEstimados ? parseFloat(newTrip.kmEstimados) : null
+                 km_estimados: newTrip.kmEstimados ? parseFloat(newTrip.kmEstimados) : null,
+                 folio_cliente: newTrip.folioCliente || null,
+                 cliente_descarga: newTrip.clienteDescarga || null,
+                 linea: newTrip.linea || 'TBS',
+                 casetas_iave: newTrip.casetasIave ? parseFloat(newTrip.casetasIave) : 0,
+                 rendimiento_esperado: newTrip.rendimientoEsperado ? parseFloat(newTrip.rendimientoEsperado) : null,
+                 observaciones: newTrip.observaciones || null
             });
 
             if (error) {
@@ -1132,6 +1202,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
           combustibleAsignado: '',
           precioPorLitro: '',
           kmEstimados: '',
+          folioCliente: '',
+          clienteDescarga: '',
+          linea: 'TBS',
+          casetasIave: '',
+          rendimientoEsperado: '',
+          observaciones: '',
           destinations: [{ id: Date.now().toString(), name: '', mapsLink: '', destinationAddress: '', currentStageIndex: 0, status: 'PENDING' as const, instructions: '', instructions_pdf_url: '', tripNumber: '' }]
         });
         
@@ -1152,6 +1228,43 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
   // Cálculo del rango activo de fechas
   const activeDateRange = getDateRange(dateFilterMode, customDateStart, customDateEnd);
 
+  // Verificador flexible de estatus de viaje
+  const matchesStatus = (trip: Trip, filter: string): boolean => {
+    if (filter === 'ALL') return true;
+    const s = (trip.status || '').toLowerCase().trim();
+    if (filter === 'Por Aceptar') {
+      return s === 'por aceptar' || s === 'pending_acceptance' || s === 'asignado';
+    }
+    if (filter === 'En Curso') {
+      return s === 'en curso' || s === 'in_transit' || s === 'confirmado' || s === 'accepted';
+    }
+    if (filter === 'Entregando') {
+      return s === 'entregando' || s === 'delivering';
+    }
+    if (filter === 'Regresando Vacío') {
+      return s === 'regresando vacío' || s === 'regresando vacio' || s === 'returning_empty';
+    }
+    if (filter === 'Revisado') {
+      return s === 'revisado' || s === 'reviewed' || trip.evidenceStatus === 'APPROVED';
+    }
+    if (filter === 'Fin de Viaje') {
+      return s === 'fin de viaje' || s === 'completed' || s === 'completado';
+    }
+    return s === filter.toLowerCase().trim();
+  };
+
+  // Conteo en tiempo real de viajes por estatus dentro del período de fecha seleccionado
+  const dateScopedTrips = trips.filter(trip => filterByDateRange(trip.date, activeDateRange));
+  const statusCounts = {
+    ALL: dateScopedTrips.length,
+    'Por Aceptar': dateScopedTrips.filter(t => matchesStatus(t, 'Por Aceptar')).length,
+    'En Curso': dateScopedTrips.filter(t => matchesStatus(t, 'En Curso')).length,
+    'Entregando': dateScopedTrips.filter(t => matchesStatus(t, 'Entregando')).length,
+    'Regresando Vacío': dateScopedTrips.filter(t => matchesStatus(t, 'Regresando Vacío')).length,
+    'Revisado': dateScopedTrips.filter(t => matchesStatus(t, 'Revisado')).length,
+    'Fin de Viaje': dateScopedTrips.filter(t => matchesStatus(t, 'Fin de Viaje')).length,
+  };
+
   const filteredTrips = trips.filter(trip => {
     const unitEco = unitsList.find(u => u.plate === trip.plate)?.eco || '';
     const operatorName = operatorsList.find(op => op.plate === trip.plate)?.name || '';
@@ -1164,12 +1277,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
       operatorName.toLowerCase().includes(filterText.toLowerCase());
 
     const matchesDate = filterByDateRange(trip.date, activeDateRange);
+    const matchesStat = matchesStatus(trip, statusFilter);
 
-    return matchesSearch && matchesDate;
+    return matchesSearch && matchesDate && matchesStat;
   });
 
   const filteredHistoryTrips = trips.filter(trip => {
-    return filterByDateRange(trip.date, activeDateRange);
+    const matchesDate = filterByDateRange(trip.date, activeDateRange);
+    const matchesStat = matchesStatus(trip, statusFilter);
+    return matchesDate && matchesStat;
   });
 
   const inputStyle = "w-full bg-gray-100 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:bg-white block p-3 transition-colors outline-none placeholder-gray-500";
@@ -1224,7 +1340,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
     }
   };
 
-  const allFlatExpenses = extractFlatExpenses(trips, operatorsList);
+  const allFlatExpenses = extractFlatExpenses(trips, operatorsList, unitsList);
   const filteredFlatExpenses = allFlatExpenses.filter(e => {
     const matchCat = expenseCategoryFilter === 'ALL' || e.category === expenseCategoryFilter;
     const q = expenseSearch.toLowerCase().trim();
@@ -1232,7 +1348,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
       e.tripCode.toLowerCase().includes(q) ||
       e.operatorName.toLowerCase().includes(q) ||
       e.concept.toLowerCase().includes(q) ||
-      e.plate.toLowerCase().includes(q);
+      e.plate.toLowerCase().includes(q) ||
+      (e.eco && e.eco.toLowerCase().includes(q));
     const matchDate = filterByDateRange(e.timestamp || e.dateStr, activeDateRange);
     return matchCat && matchQuery && matchDate;
   });
@@ -1321,6 +1438,54 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
           </span>
         )}
       </div>
+    </div>
+  );
+
+  const renderStatusFilterToolbar = () => (
+    <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-200 mb-4 flex items-center gap-2 overflow-x-auto animate-in fade-in">
+      <span className="text-[11px] font-black uppercase text-slate-500 tracking-wider flex items-center gap-1.5 px-1 shrink-0">
+        <Filter className="h-3.5 w-3.5 text-blue-600" />
+        Estatus:
+      </span>
+      {[
+        { key: 'ALL', label: 'Todos', activeStyle: 'bg-slate-900 text-white', count: statusCounts.ALL },
+        { key: 'Por Aceptar', label: 'Por Aceptar', activeStyle: 'bg-amber-400 text-slate-950', count: statusCounts['Por Aceptar'] },
+        { key: 'En Curso', label: 'En Curso', activeStyle: 'bg-blue-600 text-white', count: statusCounts['En Curso'] },
+        { key: 'Entregando', label: 'Entregando', activeStyle: 'bg-purple-600 text-white', count: statusCounts['Entregando'] },
+        { key: 'Regresando Vacío', label: 'Regresando Vacío', activeStyle: 'bg-orange-500 text-white', count: statusCounts['Regresando Vacío'] },
+        { key: 'Revisado', label: 'Revisado', activeStyle: 'bg-emerald-600 text-white', count: statusCounts['Revisado'] },
+        { key: 'Fin de Viaje', label: 'Fin de Viaje', activeStyle: 'bg-slate-700 text-white', count: statusCounts['Fin de Viaje'] },
+      ].map(st => {
+        const isSelected = statusFilter === st.key;
+        return (
+          <button
+            key={st.key}
+            type="button"
+            onClick={() => setStatusFilter(st.key)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              isSelected
+                ? `${st.activeStyle} shadow-sm ring-2 ring-offset-1 ring-slate-400 scale-[1.02]`
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-900'
+            }`}
+          >
+            <span>{st.label}</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+              isSelected ? 'bg-black/25 text-white' : 'bg-slate-200 text-slate-700'
+            }`}>
+              {st.count}
+            </span>
+          </button>
+        );
+      })}
+      {statusFilter !== 'ALL' && (
+        <button
+          type="button"
+          onClick={() => setStatusFilter('ALL')}
+          className="text-[11px] font-bold text-rose-600 hover:text-rose-800 underline ml-auto px-2 shrink-0"
+        >
+          Ver todos
+        </button>
+      )}
     </div>
   );
 
@@ -1527,7 +1692,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                           <div><label className={labelStyle}>Placas</label><div className="relative"><CreditCard className="absolute left-3 top-3 h-5 w-5 text-gray-400" /><input required type="text" className={`${inputStyle} pl-10`} placeholder="Ej. 123-ABC" value={unitData.plate} onChange={e => setUnitData({...unitData, plate: e.target.value})} /></div></div>
                           <div><label className={labelStyle}>Tipo de Unidad</label><select className={inputStyle} value={unitData.type} onChange={e => setUnitData({...unitData, type: e.target.value})}><option value="Camioneta">Camioneta</option><option value="Van">Van</option><option value="Torton">Torton</option><option value="Trailer">Trailer</option><option value="Rabón">Rabón</option></select></div>
                           <div><label className={labelStyle}>Tipo de Caja</label><div className="relative"><Box className="absolute left-3 top-3 h-5 w-5 text-gray-400" /><select className={`${inputStyle} pl-10`} value={unitData.box_type} onChange={e => setUnitData({...unitData, box_type: e.target.value})}><option value="Caja Seca">Caja Seca</option><option value="Refrigerada">Refrigerada</option><option value="Plataforma">Plataforma</option><option value="Redilas">Redilas</option></select></div></div>
-                          <div className="md:col-span-2">
+                          <div>
                             <label className={labelStyle}>Odómetro Actual (KM)</label>
                             <div className="relative">
                                 <Gauge className="absolute left-3 top-3 h-5 w-5 text-gray-400" />
@@ -1541,6 +1706,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                                 />
                             </div>
                             <p className="text-[10px] text-slate-400 mt-1 font-medium">* Este valor se usará como base para el cálculo de combustible del operador.</p>
+                          </div>
+                          <div>
+                            <label className={labelStyle}>Rendimiento Esperado (KM/L) <span className="text-xs font-normal text-slate-400">(Opcional)</span></label>
+                            <div className="relative">
+                                <Fuel className="absolute left-3 top-3 h-5 w-5 text-gray-400" />
+                                <input 
+                                    type="number"
+                                    step="0.1"
+                                    className={`${inputStyle} pl-10`} 
+                                    placeholder="Ej. 4.5" 
+                                    value={unitData.expected_yield} 
+                                    onChange={e => setUnitData({...unitData, expected_yield: e.target.value})} 
+                                />
+                            </div>
                           </div>
                       </div>
                       
@@ -1585,16 +1764,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                   </div>
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Eco</th><th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Placas</th><th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Tipo</th><th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Odómetro</th><th className="px-6 py-3 text-right text-xs font-black text-gray-500 uppercase">Acciones</th></tr></thead>
+                        <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Eco</th><th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Placas</th><th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Tipo</th><th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Rendimiento</th><th className="px-6 py-3 text-left text-xs font-black text-gray-500 uppercase">Odómetro</th><th className="px-6 py-3 text-right text-xs font-black text-gray-500 uppercase">Acciones</th></tr></thead>
                         <tbody className="bg-white divide-y divide-gray-200">
                             {unitsList.length === 0 ? (
-                                <tr><td colSpan={5} className="px-6 py-8 text-center text-slate-400">No hay unidades registradas</td></tr>
+                                <tr><td colSpan={6} className="px-6 py-8 text-center text-slate-400">No hay unidades registradas</td></tr>
                             ) : (
                                 unitsList.map((u) => (
                                     <tr key={u.id} className="hover:bg-slate-50 transition-colors">
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-slate-900">{u.eco}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">{u.plate}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600">{u.type} / {u.box_type}</td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-600 font-semibold">{u.expected_yield ? `${u.expected_yield} km/L` : '---'}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-slate-800 bg-slate-50">{u.current_odometer ? `${u.current_odometer} km` : '---'}</td>
                                         <td className="px-6 py-4 whitespace-nowrap text-right">
                                             <div className="flex justify-end gap-2">
@@ -1621,8 +1801,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                   <div className="space-y-4">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                         <div><label className={labelStyle}>Número de Viaje / Folio</label><div className="relative"><Hash className="absolute left-3 top-3 h-5 w-5 text-gray-400" /><input required type="text" className={`${inputStyle} pl-10`} placeholder="Ej. VIA-12345" value={newTrip.code} onChange={e => setNewTrip({...newTrip, code: e.target.value})} /></div></div>
+                        <div><label className={labelStyle}>Folio Cliente <span className="text-xs font-normal text-slate-400">(Opcional)</span></label><input type="text" className={inputStyle} placeholder="Ej. 6699-CONSU-1384" value={newTrip.folioCliente} onChange={e => setNewTrip({...newTrip, folioCliente: e.target.value})} /></div>
                         <div><label className={labelStyle}>Cliente</label><input required type="text" className={inputStyle} placeholder="Ej. Ford Motor Co." value={newTrip.client} onChange={e => setNewTrip({...newTrip, client: e.target.value})} /></div>
-                        <div className="md:col-span-2"><label className={labelStyle}>Proyecto</label><input required type="text" className={inputStyle} placeholder="Ej. Just In Time" value={newTrip.project} onChange={e => setNewTrip({...newTrip, project: e.target.value})} /></div>
+                        <div><label className={labelStyle}>Proyecto</label><input required type="text" className={inputStyle} placeholder="Ej. Just In Time" value={newTrip.project} onChange={e => setNewTrip({...newTrip, project: e.target.value})} /></div>
+                        <div><label className={labelStyle}>Cliente Descarga <span className="text-xs font-normal text-slate-400">(Opcional)</span></label><input type="text" className={inputStyle} placeholder="Ej. Tlalnepantla / Coyoacán" value={newTrip.clienteDescarga} onChange={e => setNewTrip({...newTrip, clienteDescarga: e.target.value})} /></div>
+                        <div><label className={labelStyle}>Línea <span className="text-xs font-normal text-slate-400">(Opcional)</span></label><input type="text" className={inputStyle} placeholder="Ej. TBS" value={newTrip.linea} onChange={e => setNewTrip({...newTrip, linea: e.target.value})} /></div>
                       </div>
                       <div className="md:col-span-2 bg-slate-50 p-4 rounded-lg border border-slate-200">
                           <h4 className="text-sm font-black text-slate-800 uppercase tracking-wider flex items-center mb-3">
@@ -1842,6 +2025,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                             </div>
                         </div>
                     </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                        <div>
+                            <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">CASETAS IAVE ($)</label>
+                            <div className="relative">
+                                <span className="absolute left-3 top-3 text-gray-500 font-bold">$</span>
+                                <input type="number" step="0.01" className={`${inputStyle} pl-8`} placeholder="0.00" value={newTrip.casetasIave} onChange={e => setNewTrip({...newTrip, casetasIave: e.target.value})} />
+                            </div>
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">RENDIMIENTO ESPERADO (KM/L)</label>
+                            <input type="number" step="0.1" className={inputStyle} placeholder="Ej. 4.5" value={newTrip.rendimientoEsperado} onChange={e => setNewTrip({...newTrip, rendimientoEsperado: e.target.value})} />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-black text-slate-400 uppercase mb-1 block">OBSERVACIONES</label>
+                            <input type="text" className={inputStyle} placeholder="Notas para la base de datos..." value={newTrip.observaciones} onChange={e => setNewTrip({...newTrip, observaciones: e.target.value})} />
+                        </div>
+                    </div>
                   </div>
 
                   <div className="pt-5 border-t border-gray-100 grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1903,10 +2103,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                       <p className="text-emerald-100 font-medium text-xs sm:text-sm">Consulta, auditoría y descarga consolidada de bitácoras archivadas por fecha o período.</p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                       <button
                           type="button"
-                          onClick={() => exportHistoryExcel(filteredHistoryTrips, operatorsList, activeDateRange.label)}
+                          onClick={() => exportMasterDatabaseExcel(filteredHistoryTrips, operatorsList, unitsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`)}
+                          className="flex items-center gap-1.5 px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs sm:text-sm font-black rounded-xl shadow transition active:scale-95"
+                          title="Descargar Base de Datos Maestra Consolidada (1 fila por viaje)"
+                      >
+                          <Database className="h-4 w-4 text-slate-900" />
+                          <span>BD Maestra (Excel)</span>
+                      </button>
+                      <button
+                          type="button"
+                          onClick={() => exportHistoryExcel(filteredHistoryTrips, operatorsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`, unitsList)}
                           className="flex items-center gap-1.5 px-4 py-2 bg-white text-emerald-800 hover:bg-emerald-50 text-xs sm:text-sm font-black rounded-xl shadow transition active:scale-95"
                           title="Descargar Historial filtrado en Excel"
                       >
@@ -1915,7 +2124,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                       </button>
                       <button
                           type="button"
-                          onClick={() => exportHistoryPDF(filteredHistoryTrips, operatorsList, activeDateRange.label)}
+                          onClick={() => exportHistoryPDF(filteredHistoryTrips, operatorsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`, unitsList)}
                           className="flex items-center gap-1.5 px-4 py-2 bg-emerald-950/80 hover:bg-emerald-950 text-white text-xs sm:text-sm font-black rounded-xl shadow transition border border-emerald-500/30 active:scale-95"
                           title="Descargar Historial filtrado en PDF"
                       >
@@ -1926,7 +2135,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
               </div>
 
               {/* Selector de Rango de Fechas */}
-              {renderDateFilterToolbar(`Filtro: ${activeDateRange.label} (${filteredHistoryTrips.length} de ${trips.length} viajes)`)}
+              {renderDateFilterToolbar(`Filtro: ${activeDateRange.label}${statusFilter !== 'ALL' ? ` | Estatus: ${statusFilter}` : ''} (${filteredHistoryTrips.length} de ${trips.length} viajes)`)}
+
+              {/* Filtro Rápido por Estatus */}
+              {renderStatusFilterToolbar()}
 
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
@@ -2007,9 +2219,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
       {activeTab === 'MONITOR' && (
           <>
             {/* Barra de Filtro por Fechas */}
-            {renderDateFilterToolbar(`Filtro: ${activeDateRange.label} (${filteredTrips.length} de ${trips.length} bitácoras)`)}
+            {renderDateFilterToolbar(`Filtro: ${activeDateRange.label}${statusFilter !== 'ALL' ? ` | Estatus: ${statusFilter}` : ''} (${filteredTrips.length} de ${trips.length} bitácoras)`)}
 
-            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-6 flex flex-col md:flex-row gap-4 items-center justify-between">
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-4 flex flex-col md:flex-row gap-4 items-center justify-between">
                 <div className="relative flex-grow w-full">
                     <Search className="absolute left-3 top-3 h-5 w-5 text-gray-500" />
                     <input 
@@ -2020,10 +2232,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                         className="w-full pl-10 pr-4 py-2 bg-gray-100 text-gray-900 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none placeholder-gray-500 font-medium" 
                     />
                 </div>
-                <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+                <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
                     <button 
                         type="button"
-                        onClick={() => exportBitacorasExcel(filteredTrips, operatorsList, activeDateRange.label)} 
+                        onClick={() => exportMasterDatabaseExcel(filteredTrips, operatorsList, unitsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`)} 
+                        className="flex items-center gap-1.5 px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black rounded-lg shadow-sm transition active:scale-95"
+                        title="Descargar Base de Datos Maestra (1 fila por viaje con desglose de gastos y rendimiento)"
+                    >
+                        <Database className="h-4 w-4" />
+                        <span>BD Maestra</span>
+                    </button>
+                    <button 
+                        type="button"
+                        onClick={() => exportBitacorasExcel(filteredTrips, operatorsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`, unitsList)} 
                         className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm transition active:scale-95"
                         title="Descargar Bitácoras filtradas en Excel"
                     >
@@ -2032,7 +2253,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                     </button>
                     <button 
                         type="button"
-                        onClick={() => exportBitacorasPDF(filteredTrips, operatorsList, activeDateRange.label)} 
+                        onClick={() => exportBitacorasPDF(filteredTrips, operatorsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`, unitsList)} 
                         className="flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg shadow-sm transition active:scale-95"
                         title="Descargar Bitácoras filtradas en PDF"
                     >
@@ -2042,11 +2263,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                     <button onClick={() => setAudioEnabled(!audioEnabled)} className={`text-xs font-bold px-3 py-2 rounded-lg border ${audioEnabled ? 'bg-green-100 text-green-700 border-green-200' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>Audio: {audioEnabled ? 'ON' : 'OFF'}</button>
                 </div>
             </div>
+
+            {/* Barra de Filtro por Estatus */}
+            {renderStatusFilterToolbar()}
+
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Unidad</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estatus</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cliente / Destino</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Evidencia</th><th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th></tr></thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {filteredTrips.map((trip) => {
+                      {filteredTrips.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="px-6 py-12 text-center text-slate-400 font-medium">
+                            <Truck className="h-10 w-10 mx-auto text-slate-300 mb-2" />
+                            <p className="font-bold text-slate-600">No se encontraron bitácoras con el estatus "{statusFilter}" o los filtros aplicados</p>
+                            {statusFilter !== 'ALL' && (
+                              <button 
+                                onClick={() => setStatusFilter('ALL')} 
+                                className="mt-2 text-xs font-bold text-blue-600 hover:text-blue-800 underline"
+                              >
+                                Ver todas las bitácoras
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredTrips.map((trip) => {
                         const rowColorClass = trip.status === TripStatus.COMPLETED 
                             ? 'bg-white hover:bg-slate-50' 
                             : trip.status === TripStatus.PENDING_ACCEPTANCE 
@@ -2059,14 +2300,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                         <tr key={trip.id} className={`${rowColorClass} transition-colors cursor-pointer`} onClick={() => setSelectedTripForMonitor(trip)}>
                           <td className="px-6 py-4 whitespace-nowrap"><div className="flex items-center"><div className="flex-shrink-0 h-10 w-10 bg-white/50 rounded-full flex items-center justify-center"><Truck className="h-6 w-6 text-slate-700" /></div><div className="ml-4"><div className="text-sm font-bold text-gray-900">{unitEco}</div><div className="text-xs text-blue-900 font-bold">{operatorsList.find(op => op.plate === trip.plate)?.name || 'Sin Asignar'}</div><div className="text-xs text-gray-700">{trip.code}</div></div></div></td>
                           <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full 
-                              ${trip.status === TripStatus.COMPLETED ? 'bg-gray-100 text-gray-800' :
-                                (trip.hasIncident || trip.status === TripStatus.INCIDENT) ? 'bg-red-100 text-red-800 animate-pulse' : 
-                                trip.status === TripStatus.PENDING_ACCEPTANCE ? 'bg-amber-100 text-amber-800' : 
-                                trip.status === TripStatus.ACCEPTED ? 'bg-blue-100 text-blue-800' :
-                                trip.status === TripStatus.IN_TRANSIT ? 'bg-indigo-100 text-indigo-800' :
-                                'bg-green-100 text-green-800'}`}>
-                                {trip.status === TripStatus.COMPLETED ? trip.status : (trip.hasIncident || trip.status === TripStatus.INCIDENT ? 'En Curso (Atención)' : trip.status)}
+                            <span className={`px-2.5 py-1 inline-flex text-xs leading-5 font-bold rounded-full border ${
+                              trip.status === TripStatus.COMPLETED ? 'bg-slate-100 text-slate-800 border-slate-300' :
+                              (trip.hasIncident || trip.status === TripStatus.INCIDENT) ? 'bg-red-100 text-red-800 border-red-300 animate-pulse' : 
+                              trip.status === TripStatus.PENDING_ACCEPTANCE ? 'bg-amber-100 text-amber-900 border-amber-300 font-black' : 
+                              trip.status === TripStatus.DELIVERING ? 'bg-purple-100 text-purple-900 border-purple-300 font-bold' :
+                              trip.status === TripStatus.RETURNING_EMPTY ? 'bg-orange-100 text-orange-900 border-orange-300 font-bold' :
+                              trip.status === TripStatus.REVIEWED ? 'bg-emerald-100 text-emerald-900 border-emerald-300 font-black' :
+                              'bg-blue-100 text-blue-900 border-blue-300'}`}>
+                                {trip.status}
                             </span>
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap"><div className="text-sm text-gray-900 font-medium">{trip.client}</div><div className="text-xs text-gray-500 max-w-[150px] truncate">{trip.destination}</div></td>
@@ -2106,7 +2348,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                           </td>
                         </tr>
                       );
-                      })}
+                      })
+                    )}
                     </tbody>
                 </table>
             </div>
@@ -2140,6 +2383,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                       </a>
                   </div>
                   <div className="p-6 sm:p-8 space-y-6">
+                      {/* EXPORTACIÓN MAESTRA DE BASE DE DATOS (1 FILA POR VIAJE) */}
+                      <div className="bg-gradient-to-br from-emerald-50 via-teal-50 to-slate-50 border-2 border-emerald-300 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
+                          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                              <div className="flex items-start gap-3">
+                                  <div className="p-3 bg-emerald-600 text-white rounded-xl shadow-md shrink-0">
+                                      <FileSpreadsheet className="h-6 w-6" />
+                                  </div>
+                                  <div>
+                                      <h3 className="text-lg font-black text-slate-900 tracking-tight">
+                                          Exportar Base de Datos Maestra (Formato Consolidado)
+                                      </h3>
+                                      <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
+                                          Descarga 1 fila por viaje con todas las columnas operativas, desglose horizontal de gastos (Viáticos, Maniobras, Casetas, IAVE, Hotel, Talacha, Estadías, etc.), odómetros, diesel consumido y rendimiento real. Incluye hojas adicionales de Detalle de Gastos y Auditoría.
+                                      </p>
+                                  </div>
+                              </div>
+                              <button
+                                  type="button"
+                                  onClick={() => exportMasterDatabaseExcel(filteredHistoryTrips, operatorsList, unitsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`)}
+                                  className="flex items-center justify-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl shadow-lg hover:shadow-emerald-600/25 transition-all active:scale-95 whitespace-nowrap shrink-0 text-sm"
+                              >
+                                  <Download className="h-5 w-5" />
+                                  <span>Descargar Base de Datos (Excel)</span>
+                              </button>
+                          </div>
+                          {renderDateFilterToolbar(`Registros a exportar: ${filteredHistoryTrips.length} de ${trips.length} viajes (${activeDateRange.label})`)}
+                          {renderStatusFilterBar()}
+                      </div>
+
                       <div className="bg-cyan-50 border border-cyan-200 rounded-xl p-4 flex items-start space-x-3">
                           <CheckCircle2 className="h-5 w-5 text-cyan-700 shrink-0 mt-0.5" />
                           <div className="text-sm text-cyan-950 leading-relaxed">
@@ -2502,7 +2774,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                                           </td>
                                           <td className="px-5 py-3.5 whitespace-nowrap">
                                               <p className="text-sm font-bold text-slate-800">{expense.operatorName}</p>
-                                              <p className="text-xs text-slate-500 font-mono">Unidad: {expense.plate}</p>
+                                              <p className="text-xs text-slate-500 font-mono">
+                                                  {expense.eco && expense.eco !== 'N/A' && expense.eco !== expense.plate ? (
+                                                      <>ECO: <span className="font-bold text-slate-700">{expense.eco}</span> • Placa: {expense.plate}</>
+                                                  ) : (
+                                                      <>Unidad: {expense.plate}</>
+                                                  )}
+                                              </p>
                                           </td>
                                           <td className="px-5 py-3.5 whitespace-nowrap">
                                               <span className={`text-[10px] font-black px-2.5 py-1 rounded-full uppercase tracking-wider ${
@@ -2698,14 +2976,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                     <div>
                         <div className="flex items-center space-x-2">
                             <h2 className="text-lg font-bold tracking-tight">{selectedTripForMonitor.plate}</h2>
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                selectedTripForMonitor.status === TripStatus.COMPLETED ? 'bg-gray-500' :
-                                (selectedTripForMonitor.hasIncident || selectedTripForMonitor.status === TripStatus.INCIDENT) ? 'bg-red-500' : 
-                                'bg-blue-600'
+                            <span className={`px-2.5 py-0.5 rounded text-[10px] font-black uppercase tracking-wider ${
+                                selectedTripForMonitor.status === TripStatus.COMPLETED ? 'bg-slate-700 text-slate-100' :
+                                (selectedTripForMonitor.hasIncident || selectedTripForMonitor.status === TripStatus.INCIDENT) ? 'bg-red-600 text-white animate-pulse' : 
+                                selectedTripForMonitor.status === TripStatus.DELIVERING ? 'bg-purple-600 text-white' :
+                                selectedTripForMonitor.status === TripStatus.RETURNING_EMPTY ? 'bg-amber-500 text-slate-950 font-black' :
+                                selectedTripForMonitor.status === TripStatus.REVIEWED ? 'bg-emerald-600 text-white' :
+                                selectedTripForMonitor.status === TripStatus.PENDING_ACCEPTANCE ? 'bg-amber-400 text-slate-950 font-bold' :
+                                'bg-blue-600 text-white'
                             }`}>
-                                {selectedTripForMonitor.status === TripStatus.COMPLETED 
-                                    ? selectedTripForMonitor.status 
-                                    : (selectedTripForMonitor.hasIncident || selectedTripForMonitor.status === TripStatus.INCIDENT ? 'En Curso (Atención)' : selectedTripForMonitor.status)}
+                                {selectedTripForMonitor.status}
                             </span>
                         </div>
                         <p className="text-slate-400 text-xs">{selectedTripForMonitor.client}</p>
@@ -2897,11 +3177,28 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                                         <div className={`flex-1 px-4 py-2 rounded-lg border transition-all duration-200 ${
                                             isCurrent ? 'bg-white border-amber-200 shadow-sm translate-x-1' : 'border-transparent'
                                         }`}>
-                                            <div className="flex justify-between items-center">
-                                                <span className={`text-sm font-bold uppercase tracking-tight ${isCurrent ? 'text-slate-900' : isCompleted ? 'text-slate-500' : 'text-slate-300'}`}>
+                                            <div className="flex justify-between items-center gap-2">
+                                                <span className={`text-xs sm:text-sm font-bold uppercase tracking-tight ${isCurrent ? 'text-slate-900' : isCompleted ? 'text-slate-700' : 'text-slate-300'}`}>
                                                     {stage.label}
                                                 </span>
-                                                {isCurrent && <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-100">En curso</span>}
+                                                {(() => {
+                                                    const stageDate = getStageFormattedDate(selectedTripForMonitor, index);
+                                                    if (stageDate && stageDate !== '-') {
+                                                        return (
+                                                            <span className="font-mono text-xs sm:text-sm font-black text-slate-900 tracking-tight shrink-0 bg-slate-50 border border-slate-200 px-2 py-0.5 rounded shadow-sm">
+                                                                {stageDate}
+                                                            </span>
+                                                        );
+                                                    }
+                                                    if (isCurrent) {
+                                                        return (
+                                                            <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200 shrink-0">
+                                                                En curso
+                                                            </span>
+                                                        );
+                                                    }
+                                                    return null;
+                                                })()}
                                             </div>
                                             
                                             {/* Evidencia de esta etapa */}

@@ -170,6 +170,74 @@ export const formatFullDateTime = (dateOrTimestamp?: number | string | Date | nu
   }
 };
 
+// Formato específico para etapas: DD/MM/AAAA / HH:mm:ss (como en el mockup del cliente)
+export const formatStageDateTime = (dateOrTimestamp?: number | string | Date | null): string => {
+  if (!dateOrTimestamp) return '';
+  try {
+    const d = new Date(dateOrTimestamp);
+    if (isNaN(d.getTime())) return String(dateOrTimestamp);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const seconds = String(d.getSeconds()).padStart(2, '0');
+    return `${day}/${month}/${year} / ${hours}:${minutes}:${seconds}`;
+  } catch (e) {
+    return String(dateOrTimestamp);
+  }
+};
+
+// Obtiene la fecha y hora formateada de una etapa específica de un viaje
+export const getStageFormattedDate = (trip: import('./types').Trip, stageIndex: number): string => {
+  // 1. Si existe en stage_dates o stage_timestamps
+  if (trip.stage_dates && trip.stage_dates[stageIndex]) {
+    return trip.stage_dates[stageIndex];
+  }
+  if (trip.stage_timestamps && trip.stage_timestamps[stageIndex]) {
+    return formatStageDateTime(trip.stage_timestamps[stageIndex]);
+  }
+
+  // 2. Buscar en event_log
+  if (trip.event_log && Array.isArray(trip.event_log)) {
+    const stageEvt = trip.event_log.find(e => 
+      e.eventType === 'ETAPA' && (
+        e.details?.includes(`Etapa ${stageIndex}`) ||
+        (stageIndex === 0 && (e.description?.toLowerCase().includes('comenzando') || e.description?.toLowerCase().includes('inicio'))) ||
+        (stageIndex === 1 && e.description?.toLowerCase().includes('llegando a cargar')) ||
+        (stageIndex === 2 && e.description?.toLowerCase().includes('cargado')) ||
+        (stageIndex === 3 && (e.description?.toLowerCase().includes('destino 2') || e.description?.toLowerCase().includes('tránsito') || e.description?.toLowerCase().includes('transito'))) ||
+        (stageIndex === 4 && e.description?.toLowerCase().includes('con cliente')) ||
+        (stageIndex === 5 && e.description?.toLowerCase().includes('descargado')) ||
+        (stageIndex === 6 && (e.description?.toLowerCase().includes('fin de viaje') || e.description?.toLowerCase().includes('completado')))
+      )
+    );
+    if (stageEvt) {
+      return formatStageDateTime(stageEvt.timestamp);
+    }
+  }
+
+  // 3. Buscar en evidencias fotográficas de esa etapa (ej: etapa 2 o 5)
+  if (trip.evidence && Array.isArray(trip.evidence)) {
+    const ev = trip.evidence.find(e => e.stageIndex === stageIndex);
+    if (ev && ev.timestamp) {
+      return formatStageDateTime(ev.timestamp);
+    }
+  }
+
+  // 4. Si la etapa ya fue superada o el viaje está finalizado
+  const isTripDone = trip.status === 'Fin de Viaje' || (trip.status as any) === 'COMPLETED' || trip.currentStageIndex >= 7;
+  if ((trip.currentStageIndex > stageIndex || (isTripDone && stageIndex <= 6)) && trip.created_at) {
+    const baseTime = new Date(trip.created_at).getTime();
+    if (!isNaN(baseTime)) {
+      const estimatedTime = baseTime + (stageIndex * 7200000); // 2 hrs por etapa
+      return formatStageDateTime(estimatedTime);
+    }
+  }
+
+  return '-';
+};
+
 // Generador de Eventos de Auditoría
 export const createTripEvent = (
   eventType: 'CREACION' | 'ASIGNACION' | 'NOTIFICACION' | 'ACEPTACION' | 'ETAPA' | 'EVIDENCIA' | 'GASTO' | 'UBICACION' | 'ODOMETRO' | 'INCIDENCIA' | 'OTRO',

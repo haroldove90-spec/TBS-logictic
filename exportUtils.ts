@@ -2,7 +2,7 @@ import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Trip, Unit, Operator, ExpenseRecord, TripStatus } from './types';
-import { formatFullDateTime, buildFullTripEventLog } from './utils';
+import { formatFullDateTime, buildFullTripEventLog, getStageFormattedDate } from './utils';
 
 // Utilidad para formatear fechas en nombres de archivo (AAAAMMDD_HHMM)
 const getFormattedTimestamp = (): string => {
@@ -20,6 +20,17 @@ const getOperatorName = (operatorId: string | undefined, operators: Operator[]):
   if (!operatorId) return 'Sin asignar';
   const op = operators.find(o => o.id === operatorId || o.username === operatorId);
   return op ? op.name : operatorId;
+};
+
+// Obtiene el número económico (ECO) de la unidad según la placa o identificador
+export const getUnitEco = (plate: string | undefined, units: Unit[] = []): string => {
+  if (!plate) return 'N/A';
+  const cleanPlate = plate.trim().toLowerCase();
+  const unit = units.find(u => 
+    (u.plate && u.plate.trim().toLowerCase() === cleanPlate) ||
+    (u.eco && u.eco.trim().toLowerCase() === cleanPlate)
+  );
+  return unit?.eco || plate;
 };
 
 // Calcula el total de gastos extras de un viaje
@@ -175,7 +186,7 @@ export const exportMultiSheetExcel = (
 // 1. MÓDULO BITÁCORAS (VIAJES ACTIVOS)
 // ==========================================
 
-export const exportBitacorasExcel = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
+export const exportBitacorasExcel = (trips: Trip[], operators: Operator[], dateRangeLabel?: string, units: Unit[] = []) => {
   const auditEventsData: Record<string, any>[] = [];
 
   const data = trips.map(t => {
@@ -185,12 +196,15 @@ export const exportBitacorasExcel = (trips: Trip[], operators: Operator[], dateR
       : t.destination;
     
     const opName = getOperatorName(t.operator_id, operators);
+    const unitEco = getUnitEco(t.plate, units);
     const tripEvents = buildFullTripEventLog(t, opName);
     const lastEvent = tripEvents.length > 0 ? tripEvents[tripEvents.length - 1] : null;
 
     tripEvents.forEach(evt => {
       auditEventsData.push({
         'Código de Viaje': t.code,
+        'ECO': unitEco,
+        'Placa': t.plate || 'N/A',
         'Fecha y Hora Exacta': evt.dateFormatted || formatFullDateTime(evt.timestamp),
         'Tipo de Evento': evt.eventType,
         'Usuario / Responsable': evt.user,
@@ -207,10 +221,18 @@ export const exportBitacorasExcel = (trips: Trip[], operators: Operator[], dateR
       'Cliente': t.client || 'N/A',
       'Proyecto': t.project || 'N/A',
       'Operador': opName,
+      'ECO': unitEco,
       'Unidad / Placa': t.plate || 'N/A',
       'Origen': t.origin || 'N/A',
       'Destino': destStr || 'N/A',
       'Estatus': t.status,
+      '1. Comenzando Viaje': getStageFormattedDate(t, 0),
+      '2. Llegando a Cargar': getStageFormattedDate(t, 1),
+      '3. Cargado': getStageFormattedDate(t, 2),
+      '4. Iniciar Destino 2': getStageFormattedDate(t, 3),
+      '5. Con Cliente': getStageFormattedDate(t, 4),
+      '6. Descargado': getStageFormattedDate(t, 5),
+      '7. Fin de Viaje': getStageFormattedDate(t, 6),
       'Odómetro Inicial': t.odometerStart || 0,
       'Odómetro Actual': t.odometerEnd || t.odometerStart || 0,
       'Km Estimados': t.kmEstimados || 0,
@@ -229,7 +251,7 @@ export const exportBitacorasExcel = (trips: Trip[], operators: Operator[], dateR
   ], `TLS_Bitacoras_Activas${cleanLabel}`);
 };
 
-export const exportBitacorasPDF = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
+export const exportBitacorasPDF = (trips: Trip[], operators: Operator[], dateRangeLabel?: string, units: Unit[] = []) => {
   if (!trips || trips.length === 0) {
     alert('No hay bitácoras activas para exportar.');
     return;
@@ -270,7 +292,7 @@ export const exportBitacorasPDF = (trips: Trip[], operators: Operator[], dateRan
   doc.text(`Total Gastos Registrados: $${totalGastos.toFixed(2)}`, 180, 34);
 
   // Table Data con Fecha y Hora
-  const head = [['Código', 'Fecha / Creación', 'Cliente', 'Operador', 'Placa', 'Ruta', 'Estatus', 'Odom. Inicial', 'Odom. Final', 'Gastos ($)']];
+  const head = [['Código', 'Fecha / Creación', 'Cliente', 'Operador', 'ECO', 'Placa', 'Ruta', 'Estatus', 'Odom. Inicial', 'Odom. Final', 'Gastos ($)']];
   const body = trips.map(t => {
     const dateTime = t.created_at ? formatFullDateTime(t.created_at) : (t.date || 'N/A');
     return [
@@ -278,6 +300,7 @@ export const exportBitacorasPDF = (trips: Trip[], operators: Operator[], dateRan
       dateTime,
       t.client || 'N/A',
       getOperatorName(t.operator_id, operators),
+      getUnitEco(t.plate, units),
       t.plate || 'N/A',
       `${t.origin} -> ${t.destinations && t.destinations.length > 0 ? t.destinations[0].name : t.destination}`,
       t.status,
@@ -316,7 +339,7 @@ export const exportBitacorasPDF = (trips: Trip[], operators: Operator[], dateRan
 // 2. MÓDULO HISTORIAL (VIAJES ARCHIVADOS)
 // ==========================================
 
-export const exportHistoryExcel = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
+export const exportHistoryExcel = (trips: Trip[], operators: Operator[], dateRangeLabel?: string, units: Unit[] = []) => {
   const auditEventsData: Record<string, any>[] = [];
 
   const data = trips.map(t => {
@@ -325,11 +348,14 @@ export const exportHistoryExcel = (trips: Trip[], operators: Operator[], dateRan
     const combustible = Number(t.costoTotalCombustible || 0);
     const totalGeneral = combustible + extraCosts;
     const opName = getOperatorName(t.operator_id, operators);
+    const unitEco = getUnitEco(t.plate, units);
     const tripEvents = buildFullTripEventLog(t, opName);
 
     tripEvents.forEach(evt => {
       auditEventsData.push({
         'Código de Viaje': t.code,
+        'ECO': unitEco,
+        'Placa': t.plate || 'N/A',
         'Fecha y Hora Exacta': evt.dateFormatted || formatFullDateTime(evt.timestamp),
         'Tipo de Evento': evt.eventType,
         'Usuario / Responsable': evt.user,
@@ -345,6 +371,7 @@ export const exportHistoryExcel = (trips: Trip[], operators: Operator[], dateRan
       'Cliente': t.client || 'N/A',
       'Proyecto': t.project || 'N/A',
       'Operador': opName,
+      'ECO': unitEco,
       'Placa': t.plate || 'N/A',
       'Origen': t.origin || 'N/A',
       'Destino': t.destination || (t.destinations?.[0]?.name ?? 'N/A'),
@@ -355,6 +382,13 @@ export const exportHistoryExcel = (trips: Trip[], operators: Operator[], dateRan
       'Gastos Extras ($)': extraCosts.toFixed(2),
       'Costo Total Viaje ($)': totalGeneral.toFixed(2),
       'Estatus': t.status,
+      '1. Comenzando Viaje': getStageFormattedDate(t, 0),
+      '2. Llegando a Cargar': getStageFormattedDate(t, 1),
+      '3. Cargado': getStageFormattedDate(t, 2),
+      '4. Iniciar Destino 2': getStageFormattedDate(t, 3),
+      '5. Con Cliente': getStageFormattedDate(t, 4),
+      '6. Descargado': getStageFormattedDate(t, 5),
+      '7. Fin de Viaje': getStageFormattedDate(t, 6),
       'Total Eventos Auditados': tripEvents.length
     };
   });
@@ -366,7 +400,7 @@ export const exportHistoryExcel = (trips: Trip[], operators: Operator[], dateRan
   ], `TLS_Historial_Viajes${cleanLabel}`);
 };
 
-export const exportHistoryPDF = (trips: Trip[], operators: Operator[], dateRangeLabel?: string) => {
+export const exportHistoryPDF = (trips: Trip[], operators: Operator[], dateRangeLabel?: string, units: Unit[] = []) => {
   if (!trips || trips.length === 0) {
     alert('No hay viajes en el historial para exportar.');
     return;
@@ -403,18 +437,20 @@ export const exportHistoryPDF = (trips: Trip[], operators: Operator[], dateRange
   doc.text(`Km Totales Acumulados: ${totalKm.toLocaleString()} km`, 80, 34);
   doc.text(`Inversión Total (Combustible + Gastos): $${totalCostos.toFixed(2)}`, 170, 34);
 
-  const head = [['Código', 'Fecha', 'Cliente', 'Operador', 'Placa', 'Ruta', 'Km', 'Combustible ($)', 'Gastos ($)', 'Total ($)']];
+  const head = [['Código', 'Fecha / Creación', 'Cliente', 'Operador', 'ECO', 'Placa', 'Ruta', 'Estatus', 'Km', 'Combustible ($)', 'Gastos ($)', 'Total ($)']];
   const body = trips.map(t => {
     const km = Math.max(0, (t.odometerEnd || 0) - (t.odometerStart || 0));
     const gas = Number(t.costoTotalCombustible || 0);
     const extras = getTripTotalExpenses(t);
     return [
       t.code,
-      t.date || 'N/A',
+      t.created_at ? formatFullDateTime(t.created_at) : (t.date || 'N/A'),
       t.client || 'N/A',
       getOperatorName(t.operator_id, operators),
+      getUnitEco(t.plate, units),
       t.plate || 'N/A',
       `${t.origin} -> ${t.destination}`,
+      t.status,
       `${km} km`,
       `$${gas.toFixed(2)}`,
       `$${extras.toFixed(2)}`,
@@ -634,6 +670,7 @@ export interface FlatExpenseRow {
   tripCode: string;
   recordId: string;
   operatorName: string;
+  eco: string;
   plate: string;
   dateStr: string;
   dateTimeStr: string;
@@ -650,12 +687,13 @@ export interface FlatExpenseRow {
 }
 
 // Extrae todos los gastos planos de una lista de viajes
-export const extractFlatExpenses = (trips: Trip[], operators: Operator[]): FlatExpenseRow[] => {
+export const extractFlatExpenses = (trips: Trip[], operators: Operator[], units: Unit[] = []): FlatExpenseRow[] => {
   const rows: FlatExpenseRow[] = [];
 
   trips.forEach(t => {
     if (!t.extraCosts || !Array.isArray(t.extraCosts)) return;
     const opName = getOperatorName(t.operator_id, operators);
+    const unitEco = getUnitEco(t.plate, units);
 
     t.extraCosts.forEach(record => {
       const dateStr = record.timestamp ? new Date(record.timestamp).toLocaleDateString('es-MX') : t.date || 'N/A';
@@ -671,6 +709,7 @@ export const extractFlatExpenses = (trips: Trip[], operators: Operator[]): FlatE
             tripCode: t.code,
             recordId: record.id,
             operatorName: opName,
+            eco: unitEco,
             plate: t.plate || 'N/A',
             dateStr,
             dateTimeStr,
@@ -693,6 +732,7 @@ export const extractFlatExpenses = (trips: Trip[], operators: Operator[]): FlatE
           tripCode: t.code,
           recordId: record.id,
           operatorName: opName,
+          eco: unitEco,
           plate: t.plate || 'N/A',
           dateStr,
           dateTimeStr,
@@ -717,6 +757,7 @@ export const exportExpensesExcel = (expenses: FlatExpenseRow[], dateRangeLabel?:
     'Fecha y Hora de Registro (Captura)': e.dateTimeStr || e.dateStr,
     'Fecha Contable': e.dateStr,
     'Operador': e.operatorName,
+    'ECO': e.eco || 'N/A',
     'Placa': e.plate,
     'Categoría': e.category,
     'Concepto': e.concept,
@@ -771,7 +812,7 @@ export const exportExpensesPDF = (expenses: FlatExpenseRow[], dateRangeLabel?: s
   doc.text(`Gastos de Viaje: $${totalViaje.toFixed(2)}`, 140, 34);
   doc.text(`Mantenimiento: $${totalMant.toFixed(2)}`, 205, 34);
 
-  const head = [['Viaje', 'Fecha y Hora Registro', 'Operador', 'Placa', 'Categoría', 'Concepto', 'Detalle Odom/Litros', 'Monto ($)', 'Evidencia']];
+  const head = [['Viaje', 'Fecha y Hora Registro', 'Operador', 'ECO', 'Placa', 'Categoría', 'Concepto', 'Detalle Odom/Litros', 'Monto ($)', 'Evidencia']];
   const body = expenses.map(e => {
     let detalle = '-';
     if (e.liters && e.pricePerLiter) detalle = `${e.liters}L @ $${e.pricePerLiter}`;
@@ -781,6 +822,7 @@ export const exportExpensesPDF = (expenses: FlatExpenseRow[], dateRangeLabel?: s
       e.tripCode,
       e.dateTimeStr || e.dateStr,
       e.operatorName,
+      e.eco || 'N/A',
       e.plate,
       e.category,
       e.concept,
@@ -814,3 +856,411 @@ export const exportExpensesPDF = (expenses: FlatExpenseRow[], dateRangeLabel?: s
   const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
   doc.save(`TLS_Gastos_Operadores${cleanLabel}_${getFormattedTimestamp()}.pdf`);
 };
+
+// ==========================================
+// 6. EXPORTACIÓN MAESTRA DE BASE DE DATOS (1 FILA POR VIAJE)
+// ==========================================
+
+const getUnitByPlate = (plate: string | undefined, units: Unit[] = []): Unit | undefined => {
+  if (!plate) return undefined;
+  const cleanPlate = plate.trim().toLowerCase();
+  return units.find(u =>
+    (u.plate && u.plate.trim().toLowerCase() === cleanPlate) ||
+    (u.eco && u.eco.trim().toLowerCase() === cleanPlate)
+  );
+};
+
+const formatDateDMY = (val: any): string => {
+  if (!val) return '';
+  const s = String(val).trim();
+  const ymd = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (ymd) return `${ymd[3]}/${ymd[2]}/${ymd[1]}`;
+  const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (dmy) return `${dmy[1].padStart(2, '0')}/${dmy[2].padStart(2, '0')}/${dmy[3]}`;
+  const d = new Date(val);
+  if (!isNaN(d.getTime())) {
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    return `${day}/${month}/${year}`;
+  }
+  return s;
+};
+
+type ExpenseBucket =
+  | 'COMBUSTIBLE'
+  | 'VIATICOS'
+  | 'MANIOBRAS'
+  | 'CASETAS'
+  | 'CASETAS_IAVE'
+  | 'TRANSITO'
+  | 'ESTACIONAMIENTO'
+  | 'PERMISO_FITO'
+  | 'HOTEL_PENSION'
+  | 'TALACHA'
+  | 'ESTADIAS'
+  | 'OTROS';
+
+const normalizeTextForMatch = (txt: string): string =>
+  txt
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+export const classifyExpenseBucket = (concept: string, liters?: number): ExpenseBucket => {
+  const c = normalizeTextForMatch(concept || '');
+
+  if (c.includes('carga combustible') || (liters !== undefined && Number(liters) > 0)) {
+    return 'COMBUSTIBLE';
+  }
+  if (c.includes('casetas iave') || c.includes('iave')) {
+    return 'CASETAS_IAVE';
+  }
+  if (c.includes('[casetas') || c.includes('caseta') || c.includes('peaje')) {
+    return 'CASETAS';
+  }
+  if (c.includes('[viaticos]') || c.includes('viatico') || c.includes('comida') || c.includes('alimento') || c.includes('desayuno') || c.includes('cena') || c.includes('despensa')) {
+    return 'VIATICOS';
+  }
+  if (c.includes('[maniobras]') || c.includes('maniobra')) {
+    return 'MANIOBRAS';
+  }
+  if (c.includes('[hotel') || c.includes('hotel') || c.includes('pension') || c.includes('hospedaje') || c.includes('motel')) {
+    return 'HOTEL_PENSION';
+  }
+  if (c.includes('[talacha]') || c.includes('talacha') || c.includes('llanta') || c.includes('vulcanizadora') || c.includes('ponchadura')) {
+    return 'TALACHA';
+  }
+  if (c.includes('[estadias]') || c.includes('estadia')) {
+    return 'ESTADIAS';
+  }
+  if (c.includes('[permiso') || c.includes('permiso') || c.includes('fitosanitaria') || c.includes('sanidad') || c.includes('fumigacion')) {
+    return 'PERMISO_FITO';
+  }
+  if (c.includes('[estacionamiento]') || c.includes('estacionamiento') || c.includes('parquimetro')) {
+    return 'ESTACIONAMIENTO';
+  }
+  if (c.includes('[transito]') || c.includes('transito') || c.includes('dadiva') || c.includes('infraccion') || c.includes('multa') || c.includes('federal')) {
+    return 'TRANSITO';
+  }
+  return 'OTROS';
+};
+
+export const exportMasterDatabaseExcel = (
+  trips: Trip[],
+  operators: Operator[],
+  units: Unit[] = [],
+  dateRangeLabel?: string
+) => {
+  if (!trips || trips.length === 0) {
+    alert('No hay registros de viajes disponibles para exportar en el período seleccionado.');
+    return;
+  }
+
+  const masterRows: Record<string, any>[] = [];
+  const detailRows: Record<string, any>[] = [];
+  const auditEventsData: Record<string, any>[] = [];
+
+  trips.forEach(t => {
+    const unit = getUnitByPlate(t.plate, units);
+    const opName = getOperatorName(t.operator_id, operators);
+    const unitEco = unit?.eco || getUnitEco(t.plate, units);
+    const unitType = unit?.type || 'N/A';
+
+    // Totales horizontales por columna de gasto
+    const totals = {
+      viaticos: 0,
+      maniobras: 0,
+      casetas: 0,
+      casetasIave: Number(t.casetasIave || 0),
+      transito: 0,
+      estacionamiento: 0,
+      permisoFito: 0,
+      hotelPension: 0,
+      talacha: 0,
+      estadias: 0,
+      otros: 0
+    };
+
+    let dieselRealLiters = 0;
+    let fuelDistanceSum = 0;
+    const fuelYields: number[] = [];
+
+    if (t.extraCosts && Array.isArray(t.extraCosts)) {
+      t.extraCosts.forEach(rec => {
+        const recDateStr = rec.timestamp ? formatFullDateTime(rec.timestamp) : (t.date || 'N/A');
+        const evidenceUrl = rec.evidence && rec.evidence.length > 0 ? rec.evidence[0].url : 'Sin foto';
+
+        if (rec.items && rec.items.length > 0) {
+          rec.items.forEach(item => {
+            const amount = Number(item.amount) || 0;
+            const liters = Number(item.liters) || 0;
+            const bucket = classifyExpenseBucket(item.concept, liters);
+
+            switch (bucket) {
+              case 'COMBUSTIBLE':
+                dieselRealLiters += liters;
+                if (item.odometer && item.initialOdometer && item.odometer > item.initialOdometer) {
+                  fuelDistanceSum += (item.odometer - item.initialOdometer);
+                }
+                if (item.performance && Number(item.performance) > 0) {
+                  fuelYields.push(Number(item.performance));
+                }
+                break;
+              case 'VIATICOS':
+                totals.viaticos += amount;
+                break;
+              case 'MANIOBRAS':
+                totals.maniobras += amount;
+                break;
+              case 'CASETAS':
+                totals.casetas += amount;
+                break;
+              case 'CASETAS_IAVE':
+                totals.casetasIave += amount;
+                break;
+              case 'TRANSITO':
+                totals.transito += amount;
+                break;
+              case 'ESTACIONAMIENTO':
+                totals.estacionamiento += amount;
+                break;
+              case 'PERMISO_FITO':
+                totals.permisoFito += amount;
+                break;
+              case 'HOTEL_PENSION':
+                totals.hotelPension += amount;
+                break;
+              case 'TALACHA':
+                totals.talacha += amount;
+                break;
+              case 'ESTADIAS':
+                totals.estadias += amount;
+                break;
+              case 'OTROS':
+              default:
+                totals.otros += amount;
+                break;
+            }
+
+            detailRows.push({
+              'NO. Viaje': t.code,
+              'ECO': unitEco,
+              'Placas': t.plate || 'N/A',
+              'Operador': opName,
+              'Fecha y Hora Registro': recDateStr,
+              'Categoría Sistema': rec.category,
+              'Columna Base Datos': bucket,
+              'Concepto': item.concept,
+              'Monto ($)': Number(amount.toFixed(2)),
+              'Litros': liters || '',
+              'Odómetro': item.odometer || '',
+              'Evidencia': evidenceUrl
+            });
+          });
+        } else {
+          const recTotal = Number(rec.total) || 0;
+          totals.otros += recTotal;
+          detailRows.push({
+            'NO. Viaje': t.code,
+            'ECO': unitEco,
+            'Placas': t.plate || 'N/A',
+            'Operador': opName,
+            'Fecha y Hora Registro': recDateStr,
+            'Categoría Sistema': rec.category,
+            'Columna Base Datos': 'OTROS',
+            'Concepto': 'Gasto registrado',
+            'Monto ($)': Number(recTotal.toFixed(2)),
+            'Litros': '',
+            'Odómetro': '',
+            'Evidencia': evidenceUrl
+          });
+        }
+      });
+    }
+
+    const totalCasetas = totals.casetas + totals.casetasIave;
+
+    // Destinos y Folio Cliente
+    const destNames = t.destinations && t.destinations.length > 0
+      ? t.destinations.map(d => d.name).filter(Boolean).join(', ')
+      : (t.destination || '');
+    const clienteDescargaStr = t.clienteDescarga?.trim()
+      ? t.clienteDescarga
+      : (t.destinations && t.destinations.length > 0
+          ? t.destinations.map(d => d.destinationAddress || d.client || d.name).filter(Boolean).join(' | ')
+          : (t.destination || ''));
+
+    const extraTripNumbers = t.destinations
+      ? t.destinations.map(d => d.tripNumber).filter(Boolean).join(', ')
+      : '';
+    const folioClienteStr = t.folioCliente?.trim()
+      ? t.folioCliente
+      : (extraTripNumbers || '');
+
+    // Odómetros, KMs y Rendimiento
+    const odomInicial = Number(t.odometerStart || 0);
+    const odomFinal = Number(t.odometerEnd || 0);
+    const kmsRecorridos = (odomFinal > 0 && odomInicial > 0 && odomFinal >= odomInicial)
+      ? (odomFinal - odomInicial)
+      : (fuelDistanceSum > 0 ? fuelDistanceSum : 0);
+
+    const rendimientoEsperado = t.rendimientoEsperado ?? unit?.expected_yield ?? '';
+    let rendimientoReal: number | string = '';
+    if (kmsRecorridos > 0 && dieselRealLiters > 0) {
+      rendimientoReal = Number((kmsRecorridos / dieselRealLiters).toFixed(2));
+    } else if (fuelYields.length > 0) {
+      const avg = fuelYields.reduce((a, b) => a + b, 0) / fuelYields.length;
+      rendimientoReal = Number(avg.toFixed(2));
+    }
+
+    // Fecha Recibo de Bitácora (Fin de Viaje o Revisado)
+    let fechaReciboBitacora = '';
+    const reviewedEvt = (t.event_log || []).slice().reverse().find(e =>
+      e.description?.toLowerCase().includes('revisado') ||
+      e.description?.toLowerCase().includes('evidencias aprobadas')
+    );
+    if (t.stage_dates && t.stage_dates[6]) {
+      fechaReciboBitacora = formatDateDMY(t.stage_dates[6]);
+    } else if (t.stage_timestamps && t.stage_timestamps[6]) {
+      fechaReciboBitacora = formatDateDMY(t.stage_timestamps[6]);
+    } else if (reviewedEvt) {
+      fechaReciboBitacora = formatDateDMY(reviewedEvt.timestamp || reviewedEvt.dateFormatted);
+    }
+
+    // Observaciones consolidadas
+    const obsParts: string[] = [];
+    if (t.observaciones?.trim()) obsParts.push(t.observaciones.trim());
+    if (t.rejectionReason?.trim()) obsParts.push(`Motivo rechazo: ${t.rejectionReason.trim()}`);
+    if (t.instructions?.trim()) obsParts.push(t.instructions.trim());
+    const observacionesStr = obsParts.join(' | ');
+
+    // Eventos para Hoja 3
+    const tripEvents = buildFullTripEventLog(t, opName);
+    tripEvents.forEach(evt => {
+      auditEventsData.push({
+        'Código de Viaje': t.code,
+        'ECO': unitEco,
+        'Placa': t.plate || 'N/A',
+        'Fecha y Hora Exacta': evt.dateFormatted || formatFullDateTime(evt.timestamp),
+        'Tipo de Evento': evt.eventType,
+        'Usuario / Responsable': evt.user,
+        'Descripción del Evento': evt.description,
+        'Detalles': evt.details || ''
+      });
+    });
+
+    masterRows.push({
+      'NO.': t.code,
+      'FECHA CARGA': formatDateDMY(t.date || t.created_at),
+      'HORA CARGA': t.appointment || '00:00',
+      'CLIENTE': t.client || '',
+      'PROYECTO': t.project || '',
+      'FOLIO CLIENTE': folioClienteStr,
+      'LUGAR DE CARGA O RECOLECCION': t.origin || '',
+      'DESTINO': destNames,
+      'CLIENTE DESCARGA': clienteDescargaStr,
+      'LINEA': t.linea || 'TBS',
+      'OPERADOR': opName,
+      'ECO UNIDAD': unitEco,
+      'TIPO UNIDAD CLIENTE': unitType,
+      'PLACAS UNIDAD': t.plate || '',
+      'VIATICOS': Number(totals.viaticos.toFixed(2)),
+      'MANIOBRAS AUTORIZADAS': Number(totals.maniobras.toFixed(2)),
+      'CASETAS': Number(totals.casetas.toFixed(2)),
+      'CASETAS IAVE': Number(totals.casetasIave.toFixed(2)),
+      'TOTAL CASETAS': Number(totalCasetas.toFixed(2)),
+      'TRANSITO': Number(totals.transito.toFixed(2)),
+      'ESTACIONAMIENTO': Number(totals.estacionamiento.toFixed(2)),
+      'PERMISO / FITOSANITARIA': Number(totals.permisoFito.toFixed(2)),
+      'HOTEL O PENSION': Number(totals.hotelPension.toFixed(2)),
+      'TALACHA': Number(totals.talacha.toFixed(2)),
+      'ESTADIAS': Number(totals.estadias.toFixed(2)),
+      'OTROS': Number(totals.otros.toFixed(2)),
+      'RENDIMIENTO': rendimientoEsperado !== '' ? Number(rendimientoEsperado) : '',
+      'ODOMETRO INICIAL': odomInicial > 0 ? odomInicial : '',
+      'ODOMETRO FINAL': odomFinal > 0 ? odomFinal : '',
+      'KMS RECORRIDOS': kmsRecorridos > 0 ? Number(kmsRecorridos.toFixed(1)) : '',
+      'DIESEL REAL CONSUMIDO': dieselRealLiters > 0 ? Number(dieselRealLiters.toFixed(2)) : '',
+      'RENDIMIENTO REAL': rendimientoReal,
+      'FECHA RECIBO DE BITACORA': fechaReciboBitacora,
+      'OBSERVACIONES': observacionesStr,
+      'ESTATUS': t.status
+    });
+  });
+
+  const workbook = XLSX.utils.book_new();
+
+  // Hoja 1: Base de Datos Maestra (1 fila por viaje)
+  const wsMaster = XLSX.utils.json_to_sheet(masterRows);
+  const currencyCols = new Set([
+    'VIATICOS',
+    'MANIOBRAS AUTORIZADAS',
+    'CASETAS',
+    'CASETAS IAVE',
+    'TOTAL CASETAS',
+    'TRANSITO',
+    'ESTACIONAMIENTO',
+    'PERMISO / FITOSANITARIA',
+    'HOTEL O PENSION',
+    'TALACHA',
+    'ESTADIAS',
+    'OTROS'
+  ]);
+
+  const masterHeaders = Object.keys(masterRows[0] || {});
+  const range = XLSX.utils.decode_range(wsMaster['!ref'] || 'A1');
+  for (let R = 1; R <= range.e.r; R++) {
+    for (let C = 0; C <= range.e.c; C++) {
+      const header = masterHeaders[C];
+      if (currencyCols.has(header)) {
+        const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = wsMaster[cellRef];
+        if (cell && cell.t === 'n') {
+          cell.z = '$#,##0.00;-$#,##0.00;"$ -"';
+        }
+      }
+    }
+  }
+
+  wsMaster['!cols'] = masterHeaders.map(key => {
+    const maxLen = Math.max(
+      key.length,
+      ...masterRows.map(row => (row[key] !== null && row[key] !== undefined ? String(row[key]).length : 0))
+    );
+    return { wch: Math.min(Math.max(maxLen + 3, 12), 40) };
+  });
+  XLSX.utils.book_append_sheet(workbook, wsMaster, 'Base de Datos');
+
+  // Hoja 2: Detalle de Gastos (si existen gastos)
+  if (detailRows.length > 0) {
+    const wsDetail = XLSX.utils.json_to_sheet(detailRows);
+    const detailHeaders = Object.keys(detailRows[0]);
+    wsDetail['!cols'] = detailHeaders.map(key => {
+      const maxLen = Math.max(
+        key.length,
+        ...detailRows.map(row => (row[key] !== null && row[key] !== undefined ? String(row[key]).length : 0))
+      );
+      return { wch: Math.min(Math.max(maxLen + 2, 12), 45) };
+    });
+    XLSX.utils.book_append_sheet(workbook, wsDetail, 'Detalle de Gastos');
+  }
+
+  // Hoja 3: Auditoría de Eventos (si existen eventos)
+  if (auditEventsData.length > 0) {
+    const wsAudit = XLSX.utils.json_to_sheet(auditEventsData);
+    const auditHeaders = Object.keys(auditEventsData[0]);
+    wsAudit['!cols'] = auditHeaders.map(key => {
+      const maxLen = Math.max(
+        key.length,
+        ...auditEventsData.map(row => (row[key] !== null && row[key] !== undefined ? String(row[key]).length : 0))
+      );
+      return { wch: Math.min(Math.max(maxLen + 2, 12), 45) };
+    });
+    XLSX.utils.book_append_sheet(workbook, wsAudit, 'Auditoría de Eventos');
+  }
+
+  const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
+  XLSX.writeFile(workbook, `TBS_Base_de_Datos_Maestra${cleanLabel}_${getFormattedTimestamp()}.xlsx`);
+};
+

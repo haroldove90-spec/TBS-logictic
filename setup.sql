@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS unidades (
     type TEXT DEFAULT 'Camioneta',
     box_type TEXT DEFAULT 'Caja Seca',
     status TEXT DEFAULT 'AVAILABLE',
-    current_odometer NUMERIC DEFAULT 0
+    current_odometer NUMERIC DEFAULT 0,
+    expected_yield NUMERIC
 );
 
 -- Asegurar columnas en 'unidades' si la tabla ya existía
@@ -31,6 +32,9 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'unidades' AND column_name = 'type') THEN
         ALTER TABLE unidades ADD COLUMN type TEXT DEFAULT 'Camioneta';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'unidades' AND column_name = 'expected_yield') THEN
+        ALTER TABLE unidades ADD COLUMN expected_yield NUMERIC;
     END IF;
 END $$;
 
@@ -89,7 +93,16 @@ CREATE TABLE IF NOT EXISTS viajes (
     combustible_asignado NUMERIC,
     precio_por_litro NUMERIC,
     costo_total_combustible NUMERIC,
-    km_estimados NUMERIC
+    km_estimados NUMERIC,
+    event_log JSONB DEFAULT '[]'::jsonb,
+    stage_timestamps JSONB DEFAULT '{}'::jsonb,
+    stage_dates JSONB DEFAULT '{}'::jsonb,
+    folio_cliente TEXT,
+    cliente_descarga TEXT,
+    linea TEXT DEFAULT 'TBS',
+    casetas_iave NUMERIC DEFAULT 0,
+    rendimiento_esperado NUMERIC,
+    observaciones TEXT
 );
 
 -- Asegurar que todas las columnas de 'viajes' existan si la tabla ya existía previamente
@@ -157,6 +170,30 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'event_log') THEN
         ALTER TABLE viajes ADD COLUMN event_log JSONB DEFAULT '[]'::jsonb;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'stage_timestamps') THEN
+        ALTER TABLE viajes ADD COLUMN stage_timestamps JSONB DEFAULT '{}'::jsonb;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'stage_dates') THEN
+        ALTER TABLE viajes ADD COLUMN stage_dates JSONB DEFAULT '{}'::jsonb;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'folio_cliente') THEN
+        ALTER TABLE viajes ADD COLUMN folio_cliente TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'cliente_descarga') THEN
+        ALTER TABLE viajes ADD COLUMN cliente_descarga TEXT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'linea') THEN
+        ALTER TABLE viajes ADD COLUMN linea TEXT DEFAULT 'TBS';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'casetas_iave') THEN
+        ALTER TABLE viajes ADD COLUMN casetas_iave NUMERIC DEFAULT 0;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'rendimiento_esperado') THEN
+        ALTER TABLE viajes ADD COLUMN rendimiento_esperado NUMERIC;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'viajes' AND column_name = 'observaciones') THEN
+        ALTER TABLE viajes ADD COLUMN observaciones TEXT;
     END IF;
 END $$;
 

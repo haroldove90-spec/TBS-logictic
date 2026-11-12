@@ -38,10 +38,13 @@ export interface TripStageDef {
 
 export enum TripStatus {
   PENDING_ACCEPTANCE = 'Por Aceptar', 
+  IN_TRANSIT = 'En Curso',
+  DELIVERING = 'Entregando',
+  RETURNING_EMPTY = 'Regresando Vacío',
+  REVIEWED = 'Revisado',
+  COMPLETED = 'Fin de Viaje',
   ACCEPTED = 'Confirmado',
   ASSIGNED = 'Asignado',
-  IN_TRANSIT = 'En Curso',
-  COMPLETED = 'Completado',
   DELAYED = 'Retrasado',
   INCIDENT = 'Incidencia'
 }
@@ -158,6 +161,8 @@ export interface Trip {
   locationHistory: LocationReport[];
   extraCosts: ExpenseRecord[]; 
   event_log?: TripEventLog[];
+  stage_timestamps?: Record<number, number>;
+  stage_dates?: Record<number, string>;
   
   odometerStart?: number;
   odometerEnd?: number;
@@ -168,6 +173,12 @@ export interface Trip {
   precioPorLitro?: number;
   costoTotalCombustible?: number;
   kmEstimados?: number;
+  folioCliente?: string;
+  clienteDescarga?: string;
+  linea?: string;
+  casetasIave?: number;
+  rendimientoEsperado?: number;
+  observaciones?: string;
 }
 
 export interface ReportOption {
@@ -202,4 +213,5 @@ export interface Unit {
     box_type: string;
     status: 'AVAILABLE' | 'BUSY' | 'MAINTENANCE';
     current_odometer?: number;
+    expected_yield?: number;
 }
