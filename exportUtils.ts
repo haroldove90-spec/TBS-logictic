@@ -125,6 +125,53 @@ export const filterByDateRange = (dateVal: any, range: DateRangeResult): boolean
   return true;
 };
 
+// Helper universal para dar formato limpio y ancho suficiente a cualquier hoja Excel (evita celdas encimadas)
+const formatExcelWorksheet = (
+  worksheet: XLSX.WorkSheet,
+  data: Record<string, any>[],
+  extraCurrencyCols: Set<string> = new Set()
+) => {
+  if (!data || data.length === 0) return;
+  const headers = Object.keys(data[0] || {});
+  const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+
+  for (let R = 1; R <= range.e.r; R++) {
+    for (let C = 0; C <= range.e.c; C++) {
+      const header = headers[C];
+      const isCurrency = header && (header.includes('($)') || extraCurrencyCols.has(header));
+      if (isCurrency) {
+        const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
+        const cell = worksheet[cellRef];
+        if (cell && cell.t === 'n') {
+          cell.z = '$#,##0.00;-$#,##0.00;"$ -"';
+        }
+      }
+    }
+  }
+
+  worksheet['!cols'] = headers.map(key => {
+    const isUrlCol = key.toLowerCase().includes('evidencia') || key.toLowerCase().includes('ticket') || key.toLowerCase().includes('link');
+    const maxValLen = Math.max(
+      0,
+      ...data.map(row => {
+        const v = row[key];
+        if (v === null || v === undefined) return 0;
+        if (typeof v === 'number') {
+          const formattedLen = key.includes('($)') || extraCurrencyCols.has(key)
+            ? v.toFixed(2).length + 4
+            : String(v).length + 2;
+          return formattedLen;
+        }
+        return String(v).length;
+      })
+    );
+    const headerNeeded = Math.ceil(key.length * 1.2) + 4;
+    const contentNeeded = Math.ceil(maxValLen * 1.15) + 6;
+    const cap = isUrlCol ? 55 : 100;
+    return { wch: Math.min(Math.max(headerNeeded, contentNeeded, 14), cap) };
+  });
+};
+
 // Función genérica para descargar Excel ajustando anchos de columna
 export const exportDataToExcel = (data: Record<string, any>[], filePrefix: string, sheetName: string = 'Datos') => {
   if (!data || data.length === 0) {
@@ -132,16 +179,7 @@ export const exportDataToExcel = (data: Record<string, any>[], filePrefix: strin
     return;
   }
   const worksheet = XLSX.utils.json_to_sheet(data);
-  
-  // Calcular auto-width para columnas
-  const colWidths = Object.keys(data[0] || {}).map(key => {
-    const maxValLen = Math.max(
-      key.length,
-      ...data.map(row => (row[key] !== null && row[key] !== undefined ? String(row[key]).length : 0))
-    );
-    return { wch: Math.min(Math.max(maxValLen + 2, 10), 45) };
-  });
-  worksheet['!cols'] = colWidths;
+  formatExcelWorksheet(worksheet, data);
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
@@ -160,14 +198,7 @@ export const exportMultiSheetExcel = (
   sheets.forEach(({ name, data }) => {
     if (data && data.length > 0) {
       const worksheet = XLSX.utils.json_to_sheet(data);
-      const colWidths = Object.keys(data[0] || {}).map(key => {
-        const maxValLen = Math.max(
-          key.length,
-          ...data.map(row => (row[key] !== null && row[key] !== undefined ? String(row[key]).length : 0))
-        );
-        return { wch: Math.min(Math.max(maxValLen + 2, 12), 50) };
-      });
-      worksheet['!cols'] = colWidths;
+      formatExcelWorksheet(worksheet, data);
       XLSX.utils.book_append_sheet(workbook, worksheet, name);
       addedSheets++;
     }
@@ -236,9 +267,9 @@ export const exportBitacorasExcel = (trips: Trip[], operators: Operator[], dateR
       'Odómetro Inicial': t.odometerStart || 0,
       'Odómetro Actual': t.odometerEnd || t.odometerStart || 0,
       'Km Estimados': t.kmEstimados || 0,
-      'Gastos Depositados ($)': Number(t.gastosDepositados || 0).toFixed(2),
-      'Combustible Asignado ($)': Number(t.combustibleAsignado || 0).toFixed(2),
-      'Gastos Extras ($)': totalExpenses.toFixed(2),
+      'Gastos Depositados ($)': Number(Number(t.gastosDepositados || 0).toFixed(2)),
+      'Combustible Asignado ($)': Number(Number(t.combustibleAsignado || 0).toFixed(2)),
+      'Gastos Extras ($)': Number(totalExpenses.toFixed(2)),
       'Total Eventos Registrados': tripEvents.length,
       'Último Evento': lastEvent ? `${lastEvent.dateFormatted}: ${lastEvent.description}` : 'Sin actividad registrada'
     };
@@ -378,9 +409,9 @@ export const exportHistoryExcel = (trips: Trip[], operators: Operator[], dateRan
       'Odómetro Inicial': t.odometerStart || 0,
       'Odómetro Final': t.odometerEnd || 0,
       'Km Recorridos': kmRecorridos,
-      'Costo Combustible ($)': combustible.toFixed(2),
-      'Gastos Extras ($)': extraCosts.toFixed(2),
-      'Costo Total Viaje ($)': totalGeneral.toFixed(2),
+      'Costo Combustible ($)': Number(combustible.toFixed(2)),
+      'Gastos Extras ($)': Number(extraCosts.toFixed(2)),
+      'Costo Total Viaje ($)': Number(totalGeneral.toFixed(2)),
       'Estatus': t.status,
       '1. Comenzando Viaje': getStageFormattedDate(t, 0),
       '2. Llegando a Cargar': getStageFormattedDate(t, 1),
@@ -752,21 +783,40 @@ export const extractFlatExpenses = (trips: Trip[], operators: Operator[], units:
 };
 
 export const exportExpensesExcel = (expenses: FlatExpenseRow[], dateRangeLabel?: string) => {
-  const data = expenses.map(e => ({
-    'Código de Viaje': e.tripCode,
-    'Fecha y Hora de Registro (Captura)': e.dateTimeStr || e.dateStr,
-    'Fecha Contable': e.dateStr,
-    'Operador': e.operatorName,
-    'ECO': e.eco || 'N/A',
-    'Placa': e.plate,
-    'Categoría': e.category,
-    'Concepto': e.concept,
-    'Monto ($)': Number(e.amount).toFixed(2),
-    'Litros': e.liters || '',
-    'Precio x Litro ($)': e.pricePerLiter ? Number(e.pricePerLiter).toFixed(2) : '',
-    'Odómetro (km)': e.odometer || '',
-    'Evidencia / Ticket': e.evidenceUrl ? e.evidenceUrl : 'Sin foto'
-  }));
+  const bucketLabels: Record<ExpenseBucket, string> = {
+    COMBUSTIBLE: 'COMBUSTIBLE',
+    VIATICOS: 'VIÁTICOS',
+    MANIOBRAS: 'MANIOBRAS',
+    CASETAS: 'CASETAS',
+    CASETAS_IAVE: 'CASETAS IAVE / TAG',
+    TRANSITO: 'TRÁNSITO',
+    ESTACIONAMIENTO: 'ESTACIONAMIENTO',
+    PERMISO_FITO: 'PERMISO / FITOSANITARIA',
+    HOTEL_PENSION: 'HOTEL O PENSIÓN',
+    TALACHA: 'TALACHA',
+    ESTADIAS: 'ESTADÍAS',
+    OTROS: 'OTROS GASTOS'
+  };
+
+  const data = expenses.map(e => {
+    const bucket = classifyExpenseBucket(e.concept, e.liters);
+    return {
+      'Código de Viaje': e.tripCode,
+      'Fecha y Hora de Registro (Captura)': e.dateTimeStr || e.dateStr,
+      'Fecha Contable': e.dateStr,
+      'Operador': e.operatorName,
+      'ECO': e.eco || 'N/A',
+      'Placa': e.plate,
+      'Categoría': e.category,
+      'Rubro / Subcategoría': bucketLabels[bucket] || 'OTROS GASTOS',
+      'Concepto': e.concept,
+      'Monto ($)': Number(Number(e.amount || 0).toFixed(2)),
+      'Litros': e.liters ? Number(e.liters) : '',
+      'Precio x Litro ($)': e.pricePerLiter ? Number(Number(e.pricePerLiter).toFixed(2)) : '',
+      'Odómetro (km)': e.odometer ? Number(e.odometer) : '',
+      'Evidencia / Ticket': e.evidenceUrl ? e.evidenceUrl : 'Sin foto'
+    };
+  });
 
   const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
   exportDataToExcel(data, `TLS_Gastos_Operadores${cleanLabel}`, 'Gastos');
@@ -913,7 +963,7 @@ export const classifyExpenseBucket = (concept: string, liters?: number): Expense
   if (c.includes('carga combustible') || (liters !== undefined && Number(liters) > 0)) {
     return 'COMBUSTIBLE';
   }
-  if (c.includes('casetas iave') || c.includes('iave')) {
+  if (c.includes('casetas iave') || c.includes('iave') || c.includes('casetas tag') || c.includes('caseta tag') || /\btag\b/.test(c)) {
     return 'CASETAS_IAVE';
   }
   if (c.includes('[casetas') || c.includes('caseta') || c.includes('peaje')) {
@@ -1191,8 +1241,6 @@ export const exportMasterDatabaseExcel = (
 
   const workbook = XLSX.utils.book_new();
 
-  // Hoja 1: Base de Datos Maestra (1 fila por viaje)
-  const wsMaster = XLSX.utils.json_to_sheet(masterRows);
   const currencyCols = new Set([
     'VIATICOS',
     'MANIOBRAS AUTORIZADAS',
@@ -1208,55 +1256,21 @@ export const exportMasterDatabaseExcel = (
     'OTROS'
   ]);
 
-  const masterHeaders = Object.keys(masterRows[0] || {});
-  const range = XLSX.utils.decode_range(wsMaster['!ref'] || 'A1');
-  for (let R = 1; R <= range.e.r; R++) {
-    for (let C = 0; C <= range.e.c; C++) {
-      const header = masterHeaders[C];
-      if (currencyCols.has(header)) {
-        const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
-        const cell = wsMaster[cellRef];
-        if (cell && cell.t === 'n') {
-          cell.z = '$#,##0.00;-$#,##0.00;"$ -"';
-        }
-      }
-    }
-  }
-
-  wsMaster['!cols'] = masterHeaders.map(key => {
-    const maxLen = Math.max(
-      key.length,
-      ...masterRows.map(row => (row[key] !== null && row[key] !== undefined ? String(row[key]).length : 0))
-    );
-    return { wch: Math.min(Math.max(maxLen + 3, 12), 40) };
-  });
+  const wsMaster = XLSX.utils.json_to_sheet(masterRows);
+  formatExcelWorksheet(wsMaster, masterRows, currencyCols);
   XLSX.utils.book_append_sheet(workbook, wsMaster, 'Base de Datos');
 
   // Hoja 2: Detalle de Gastos (si existen gastos)
   if (detailRows.length > 0) {
     const wsDetail = XLSX.utils.json_to_sheet(detailRows);
-    const detailHeaders = Object.keys(detailRows[0]);
-    wsDetail['!cols'] = detailHeaders.map(key => {
-      const maxLen = Math.max(
-        key.length,
-        ...detailRows.map(row => (row[key] !== null && row[key] !== undefined ? String(row[key]).length : 0))
-      );
-      return { wch: Math.min(Math.max(maxLen + 2, 12), 45) };
-    });
+    formatExcelWorksheet(wsDetail, detailRows);
     XLSX.utils.book_append_sheet(workbook, wsDetail, 'Detalle de Gastos');
   }
 
   // Hoja 3: Auditoría de Eventos (si existen eventos)
   if (auditEventsData.length > 0) {
     const wsAudit = XLSX.utils.json_to_sheet(auditEventsData);
-    const auditHeaders = Object.keys(auditEventsData[0]);
-    wsAudit['!cols'] = auditHeaders.map(key => {
-      const maxLen = Math.max(
-        key.length,
-        ...auditEventsData.map(row => (row[key] !== null && row[key] !== undefined ? String(row[key]).length : 0))
-      );
-      return { wch: Math.min(Math.max(maxLen + 2, 12), 45) };
-    });
+    formatExcelWorksheet(wsAudit, auditEventsData);
     XLSX.utils.book_append_sheet(workbook, wsAudit, 'Auditoría de Eventos');
   }
 

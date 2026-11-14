@@ -2409,7 +2409,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                               </button>
                           </div>
                           {renderDateFilterToolbar(`Registros a exportar: ${filteredHistoryTrips.length} de ${trips.length} viajes (${activeDateRange.label})`)}
-                          {renderStatusFilterBar()}
+                          {renderStatusFilterToolbar()}
                       </div>
 
                       <div className="bg-cyan-50 border border-cyan-200 rounded-xl p-4 flex items-start space-x-3">
@@ -2658,12 +2658,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                   <div className="flex flex-wrap items-center gap-2.5">
                       <button
                           type="button"
-                          onClick={() => exportExpensesExcel(filteredFlatExpenses, activeDateRange.label)}
-                          className="flex items-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl shadow-lg transition text-xs sm:text-sm active:scale-95"
-                          title="Descargar gastos filtrados en archivo Excel"
+                          onClick={() => exportMasterDatabaseExcel(trips.filter(t => filterByDateRange(t.date, activeDateRange)), operatorsList, unitsList, activeDateRange.label)}
+                          className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl shadow-lg transition text-xs sm:text-sm active:scale-95"
+                          title="Descargar Base de Datos consolidada (1 fila por viaje con columnas de gastos separadas)"
                       >
                           <FileSpreadsheet className="h-4 w-4" />
-                          <span>Descargar Excel</span>
+                          <span>BD Maestra (1 Fila x Viaje)</span>
+                      </button>
+                      <button
+                          type="button"
+                          onClick={() => exportExpensesExcel(filteredFlatExpenses, activeDateRange.label)}
+                          className="flex items-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-xl shadow-lg transition text-xs sm:text-sm active:scale-95"
+                          title="Descargar detalle de gastos filtrados en archivo Excel"
+                      >
+                          <FileSpreadsheet className="h-4 w-4" />
+                          <span>Descargar Excel (Detalle)</span>
                       </button>
                       <button
                           type="button"
