@@ -103,6 +103,24 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
         if (error) {
             // PGRST116 significa que no se encontraron filas (0 resultados)
             if (error.code === 'PGRST116') {
+                // Respaldo para admin_programador únicamente si aún no ha sido insertado en Supabase
+                if (userClean.toLowerCase() === 'admin_programador' && passClean === 'Chevropar#1970') {
+                    const { data: existingAdmin } = await supabase
+                        .from('operadores')
+                        .select('id')
+                        .ilike('username', 'admin_programador')
+                        .maybeSingle();
+
+                    if (!existingAdmin) {
+                        onLogin({
+                            id: 'ADM-07',
+                            name: 'Admin Programador',
+                            role: 'ADMIN',
+                            plate: 'ADM-07'
+                        });
+                        return;
+                    }
+                }
                 throw new Error('Credenciales incorrectas o usuario no encontrado.');
             }
             throw error; // Otros errores de conexión

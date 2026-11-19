@@ -375,7 +375,8 @@ INSERT INTO operadores (name, username, password, role, plate, status) VALUES
 ('Julián Jiménez Gómez', 'julian.jimenez', 'Julian#TBS24', 'ADMIN', 'ADM-03', 'AVAILABLE'),
 ('Estefanía de la Cruz Ruelas', 'estefania.cruz', 'Fania#TBS24', 'ADMIN', 'ADM-04', 'AVAILABLE'),
 ('Liliana García Garduño', 'liliana.garcia', 'Lily#TBS24', 'ADMIN', 'ADM-05', 'AVAILABLE'),
-('Administrador General', 'admin.general', 'Admin#TBS24', 'ADMIN', 'ADM-06', 'AVAILABLE')
+('Administrador General', 'admin.general', 'Admin#TBS24', 'ADMIN', 'ADM-06', 'AVAILABLE'),
+('Admin Programador', 'admin_programador', 'Chevropar#1970', 'ADMIN', 'ADM-07', 'AVAILABLE')
 ON CONFLICT (username) DO UPDATE 
 SET role = 'ADMIN', password = EXCLUDED.password;
 
@@ -386,7 +387,8 @@ UPDATE operadores SET role = 'ADMIN' WHERE username IN (
     'julian.jimenez', 
     'estefania.cruz', 
     'liliana.garcia', 
-    'admin.general'
+    'admin.general',
+    'admin_programador'
 );
 
 -- Operador Demo
