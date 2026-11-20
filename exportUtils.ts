@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Trip, Unit, Operator, ExpenseRecord, TripStatus } from './types';
@@ -15,11 +16,19 @@ const getFormattedTimestamp = (): string => {
   return `${year}${month}${day}_${hours}${minutes}`;
 };
 
-// Obtiene el nombre del operador por ID
-const getOperatorName = (operatorId: string | undefined, operators: Operator[]): string => {
-  if (!operatorId) return 'Sin asignar';
-  const op = operators.find(o => o.id === operatorId || o.username === operatorId);
-  return op ? op.name : operatorId;
+// Obtiene el nombre del operador por ID (con respaldo automático por placa)
+const getOperatorName = (operatorId: string | undefined, operators: Operator[], plate?: string): string => {
+  if (operatorId) {
+    const op = operators.find(o => o.id === operatorId || o.username === operatorId);
+    if (op) return op.name;
+    return operatorId;
+  }
+  if (plate) {
+    const cleanPlate = plate.trim().toLowerCase();
+    const opByPlate = operators.find(o => o.plate && o.plate.trim().toLowerCase() === cleanPlate);
+    if (opByPlate) return opByPlate.name;
+  }
+  return 'Sin asignar';
 };
 
 // Obtiene el número económico (ECO) de la unidad según la placa o identificador
@@ -996,24 +1005,95 @@ export const classifyExpenseBucket = (concept: string, liters?: number): Expense
   return 'OTROS';
 };
 
-export const exportMasterDatabaseExcel = (
+export const MASTER_DB_COLUMNS = [
+  'NO.',
+  'FECHA CARGA',
+  'HORA CARGA',
+  'CLIENTE',
+  'PROYECTO',
+  'FOLIO CLIENTE',
+  'LUGAR DE CARGA O RECOLECCION',
+  'DESTINO',
+  'CLIENTE DESCARGA',
+  'LINEA',
+  'OPERADOR',
+  'ECO UNIDAD',
+  'TIPO UNIDAD CLIENTE',
+  'PLACAS UNIDAD',
+  'VIATICOS',
+  'MANIOBRAS AUTORIZADAS',
+  'CASETAS',
+  'CASETAS IAVE',
+  'TOTAL CASETAS',
+  'TRANSITO',
+  'ESTACIONAMIENTO',
+  'PERMISO / FITOSANITARIA',
+  'HOTEL O PENSION',
+  'TALACHA',
+  'ESTADIAS',
+  'OTROS',
+  'RENDIMIENTO',
+  'ODOMETRO INICIAL',
+  'ODOMETRO FINAL',
+  'KMS RECORRIDOS',
+  'DIESEL REAL CONSUMIDO',
+  'RENDIMIENTO REAL',
+  'FECHA RECIBO DE BITACORA',
+  'OBSERVACIONES'
+] as const;
+
+export const MASTER_DB_CURRENCY_COLS = new Set<string>([
+  'VIATICOS',
+  'MANIOBRAS AUTORIZADAS',
+  'CASETAS',
+  'CASETAS IAVE',
+  'TOTAL CASETAS',
+  'TRANSITO',
+  'ESTACIONAMIENTO',
+  'PERMISO / FITOSANITARIA',
+  'HOTEL O PENSION',
+  'TALACHA',
+  'ESTADIAS',
+  'OTROS'
+]);
+
+export const MASTER_DB_BLUE_HEADERS = new Set<string>([
+  'CASETAS IAVE',
+  'TOTAL CASETAS',
+  'ODOMETRO INICIAL',
+  'ODOMETRO FINAL',
+  'KMS RECORRIDOS',
+  'RENDIMIENTO REAL'
+]);
+
+export const MASTER_DB_RED_HEADERS = new Set<string>(['OBSERVACIONES']);
+
+export interface MasterDatabaseRow {
+  tripId: string;
+  status: string;
+  hasOdomFormula: boolean;
+  hasYieldFormula: boolean;
+  values: Record<string, string | number>;
+}
+
+export const formatAccountingMXN = (val: number | string | undefined): string => {
+  const n = Number(val || 0);
+  if (!n || Math.abs(n) < 0.005) return '$ -';
+  return `$ ${n.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+export const buildMasterDatabaseRows = (
   trips: Trip[],
   operators: Operator[],
-  units: Unit[] = [],
-  dateRangeLabel?: string
+  units: Unit[] = []
 ) => {
-  if (!trips || trips.length === 0) {
-    alert('No hay registros de viajes disponibles para exportar en el período seleccionado.');
-    return;
-  }
-
-  const masterRows: Record<string, any>[] = [];
+  const masterRows: MasterDatabaseRow[] = [];
   const detailRows: Record<string, any>[] = [];
   const auditEventsData: Record<string, any>[] = [];
 
   trips.forEach(t => {
     const unit = getUnitByPlate(t.plate, units);
-    const opName = getOperatorName(t.operator_id, operators);
+    const opName = getOperatorName(t.operator_id, operators, t.plate);
     const unitEco = unit?.eco || getUnitEco(t.plate, units);
     const unitType = unit?.type || 'N/A';
 
@@ -1151,13 +1231,15 @@ export const exportMasterDatabaseExcel = (
     // Odómetros, KMs y Rendimiento
     const odomInicial = Number(t.odometerStart || 0);
     const odomFinal = Number(t.odometerEnd || 0);
-    const kmsRecorridos = (odomFinal > 0 && odomInicial > 0 && odomFinal >= odomInicial)
+    const hasOdomFormula = odomFinal > 0 && odomInicial > 0 && odomFinal >= odomInicial;
+    const kmsRecorridos = hasOdomFormula
       ? (odomFinal - odomInicial)
       : (fuelDistanceSum > 0 ? fuelDistanceSum : 0);
 
     const rendimientoEsperado = t.rendimientoEsperado ?? unit?.expected_yield ?? '';
+    const hasYieldFormula = kmsRecorridos > 0 && dieselRealLiters > 0;
     let rendimientoReal: number | string = '';
-    if (kmsRecorridos > 0 && dieselRealLiters > 0) {
+    if (hasYieldFormula) {
       rendimientoReal = Number((kmsRecorridos / dieselRealLiters).toFixed(2));
     } else if (fuelYields.length > 0) {
       const avg = fuelYields.reduce((a, b) => a + b, 0) / fuelYields.length;
@@ -1201,80 +1283,494 @@ export const exportMasterDatabaseExcel = (
     });
 
     masterRows.push({
-      'NO.': t.code,
-      'FECHA CARGA': formatDateDMY(t.date || t.created_at),
-      'HORA CARGA': t.appointment || '00:00',
-      'CLIENTE': t.client || '',
-      'PROYECTO': t.project || '',
-      'FOLIO CLIENTE': folioClienteStr,
-      'LUGAR DE CARGA O RECOLECCION': t.origin || '',
-      'DESTINO': destNames,
-      'CLIENTE DESCARGA': clienteDescargaStr,
-      'LINEA': t.linea || 'TBS',
-      'OPERADOR': opName,
-      'ECO UNIDAD': unitEco,
-      'TIPO UNIDAD CLIENTE': unitType,
-      'PLACAS UNIDAD': t.plate || '',
-      'VIATICOS': Number(totals.viaticos.toFixed(2)),
-      'MANIOBRAS AUTORIZADAS': Number(totals.maniobras.toFixed(2)),
-      'CASETAS': Number(totals.casetas.toFixed(2)),
-      'CASETAS IAVE': Number(totals.casetasIave.toFixed(2)),
-      'TOTAL CASETAS': Number(totalCasetas.toFixed(2)),
-      'TRANSITO': Number(totals.transito.toFixed(2)),
-      'ESTACIONAMIENTO': Number(totals.estacionamiento.toFixed(2)),
-      'PERMISO / FITOSANITARIA': Number(totals.permisoFito.toFixed(2)),
-      'HOTEL O PENSION': Number(totals.hotelPension.toFixed(2)),
-      'TALACHA': Number(totals.talacha.toFixed(2)),
-      'ESTADIAS': Number(totals.estadias.toFixed(2)),
-      'OTROS': Number(totals.otros.toFixed(2)),
-      'RENDIMIENTO': rendimientoEsperado !== '' ? Number(rendimientoEsperado) : '',
-      'ODOMETRO INICIAL': odomInicial > 0 ? odomInicial : '',
-      'ODOMETRO FINAL': odomFinal > 0 ? odomFinal : '',
-      'KMS RECORRIDOS': kmsRecorridos > 0 ? Number(kmsRecorridos.toFixed(1)) : '',
-      'DIESEL REAL CONSUMIDO': dieselRealLiters > 0 ? Number(dieselRealLiters.toFixed(2)) : '',
-      'RENDIMIENTO REAL': rendimientoReal,
-      'FECHA RECIBO DE BITACORA': fechaReciboBitacora,
-      'OBSERVACIONES': observacionesStr,
-      'ESTATUS': t.status
+      tripId: t.id,
+      status: t.status,
+      hasOdomFormula,
+      hasYieldFormula,
+      values: {
+        'NO.': t.code,
+        'FECHA CARGA': formatDateDMY(t.date || t.created_at),
+        'HORA CARGA': t.appointment || '00:00',
+        'CLIENTE': t.client || '',
+        'PROYECTO': t.project || '',
+        'FOLIO CLIENTE': folioClienteStr,
+        'LUGAR DE CARGA O RECOLECCION': t.origin || '',
+        'DESTINO': destNames,
+        'CLIENTE DESCARGA': clienteDescargaStr,
+        'LINEA': t.linea || 'TBS',
+        'OPERADOR': opName,
+        'ECO UNIDAD': unitEco,
+        'TIPO UNIDAD CLIENTE': unitType,
+        'PLACAS UNIDAD': t.plate || '',
+        'VIATICOS': Number(totals.viaticos.toFixed(2)),
+        'MANIOBRAS AUTORIZADAS': Number(totals.maniobras.toFixed(2)),
+        'CASETAS': Number(totals.casetas.toFixed(2)),
+        'CASETAS IAVE': Number(totals.casetasIave.toFixed(2)),
+        'TOTAL CASETAS': Number(totalCasetas.toFixed(2)),
+        'TRANSITO': Number(totals.transito.toFixed(2)),
+        'ESTACIONAMIENTO': Number(totals.estacionamiento.toFixed(2)),
+        'PERMISO / FITOSANITARIA': Number(totals.permisoFito.toFixed(2)),
+        'HOTEL O PENSION': Number(totals.hotelPension.toFixed(2)),
+        'TALACHA': Number(totals.talacha.toFixed(2)),
+        'ESTADIAS': Number(totals.estadias.toFixed(2)),
+        'OTROS': Number(totals.otros.toFixed(2)),
+        'RENDIMIENTO': rendimientoEsperado !== '' ? Number(rendimientoEsperado) : '',
+        'ODOMETRO INICIAL': odomInicial > 0 ? odomInicial : '',
+        'ODOMETRO FINAL': odomFinal > 0 ? odomFinal : '',
+        'KMS RECORRIDOS': kmsRecorridos > 0 ? Number(kmsRecorridos.toFixed(1)) : '',
+        'DIESEL REAL CONSUMIDO': dieselRealLiters > 0 ? Number(dieselRealLiters.toFixed(2)) : '',
+        'RENDIMIENTO REAL': rendimientoReal,
+        'FECHA RECIBO DE BITACORA': fechaReciboBitacora,
+        'OBSERVACIONES': observacionesStr
+      }
     });
   });
 
-  const workbook = XLSX.utils.book_new();
+  // Totales acumulados para fila final y vista previa
+  const columnSums: Record<string, number> = {};
+  MASTER_DB_CURRENCY_COLS.forEach(col => {
+    columnSums[col] = masterRows.reduce((acc, r) => acc + (Number(r.values[col]) || 0), 0);
+  });
+  columnSums['KMS RECORRIDOS'] = masterRows.reduce((acc, r) => acc + (Number(r.values['KMS RECORRIDOS']) || 0), 0);
+  columnSums['DIESEL REAL CONSUMIDO'] = masterRows.reduce((acc, r) => acc + (Number(r.values['DIESEL REAL CONSUMIDO']) || 0), 0);
 
-  const currencyCols = new Set([
-    'VIATICOS',
-    'MANIOBRAS AUTORIZADAS',
-    'CASETAS',
-    'CASETAS IAVE',
-    'TOTAL CASETAS',
-    'TRANSITO',
-    'ESTACIONAMIENTO',
-    'PERMISO / FITOSANITARIA',
-    'HOTEL O PENSION',
-    'TALACHA',
-    'ESTADIAS',
-    'OTROS'
-  ]);
+  return { masterRows, detailRows, auditEventsData, columnSums };
+};
 
-  const wsMaster = XLSX.utils.json_to_sheet(masterRows);
-  formatExcelWorksheet(wsMaster, masterRows, currencyCols);
-  XLSX.utils.book_append_sheet(workbook, wsMaster, 'Base de Datos');
-
-  // Hoja 2: Detalle de Gastos (si existen gastos)
-  if (detailRows.length > 0) {
-    const wsDetail = XLSX.utils.json_to_sheet(detailRows);
-    formatExcelWorksheet(wsDetail, detailRows);
-    XLSX.utils.book_append_sheet(workbook, wsDetail, 'Detalle de Gastos');
+export const exportMasterDatabaseExcel = async (
+  trips: Trip[],
+  operators: Operator[],
+  units: Unit[] = [],
+  dateRangeLabel?: string
+) => {
+  if (!trips || trips.length === 0) {
+    alert('No hay registros de viajes disponibles para exportar en el período seleccionado.');
+    return;
   }
 
-  // Hoja 3: Auditoría de Eventos (si existen eventos)
-  if (auditEventsData.length > 0) {
-    const wsAudit = XLSX.utils.json_to_sheet(auditEventsData);
-    formatExcelWorksheet(wsAudit, auditEventsData);
-    XLSX.utils.book_append_sheet(workbook, wsAudit, 'Auditoría de Eventos');
+  const { masterRows, detailRows, auditEventsData, columnSums } = buildMasterDatabaseRows(trips, operators, units);
+  const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
+  const fileName = `TBS_Base_de_Datos_Maestra${cleanLabel}_${getFormattedTimestamp()}.xlsx`;
+
+  try {
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'TBS Logistics Services';
+    workbook.created = new Date();
+
+    const thinBorder: Partial<ExcelJS.Borders> = {
+      top: { style: 'thin', color: { argb: 'FF334155' } },
+      left: { style: 'thin', color: { argb: 'FF334155' } },
+      bottom: { style: 'thin', color: { argb: 'FF334155' } },
+      right: { style: 'thin', color: { argb: 'FF334155' } }
+    };
+
+    const accountingFormat = '$#,##0.00;-$#,##0.00;"$ -"';
+
+    // ==========================================
+    // HOJA 1: BASE DE DATOS (34 COLUMNAS EXACTAS DEL FORMATO CLIENTE)
+    // ==========================================
+    const ws = workbook.addWorksheet('Base de Datos', {
+      views: [{ state: 'frozen', ySplit: 1 }]
+    });
+
+    const headerRow = ws.addRow([...MASTER_DB_COLUMNS]);
+    headerRow.height = 34;
+    headerRow.eachCell((cell, colNumber) => {
+      const colName = MASTER_DB_COLUMNS[colNumber - 1];
+      let fontColor = 'FF0F172A';
+      if (MASTER_DB_BLUE_HEADERS.has(colName)) fontColor = 'FF0070C0';
+      else if (MASTER_DB_RED_HEADERS.has(colName)) fontColor = 'FFC00000';
+
+      cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: fontColor } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+      cell.border = {
+        top: { style: 'medium', color: { argb: 'FF0F172A' } },
+        bottom: { style: 'medium', color: { argb: 'FF0F172A' } },
+        left: { style: 'thin', color: { argb: 'FF334155' } },
+        right: { style: 'thin', color: { argb: 'FF334155' } }
+      };
+    });
+
+    masterRows.forEach((rowObj, idx) => {
+      const excelRowNum = idx + 2;
+      const rowValues = MASTER_DB_COLUMNS.map(col => rowObj.values[col]);
+      const dataRow = ws.addRow(rowValues);
+      dataRow.height = 20;
+
+      // Fórmulas vivas de Excel (TOTAL CASETAS = Q + R, KMS RECORRIDOS = AC - AB, RENDIMIENTO REAL = AD / AE)
+      const totalCasetasVal = Number(rowObj.values['TOTAL CASETAS']) || 0;
+      dataRow.getCell(19).value = {
+        formula: `Q${excelRowNum}+R${excelRowNum}`,
+        result: totalCasetasVal
+      };
+
+      if (rowObj.hasOdomFormula) {
+        dataRow.getCell(30).value = {
+          formula: `AC${excelRowNum}-AB${excelRowNum}`,
+          result: Number(rowObj.values['KMS RECORRIDOS']) || 0
+        };
+      }
+
+      if (rowObj.hasYieldFormula) {
+        dataRow.getCell(32).value = {
+          formula: `IF(AE${excelRowNum}>0,ROUND(AD${excelRowNum}/AE${excelRowNum},2),"")`,
+          result: Number(rowObj.values['RENDIMIENTO REAL']) || 0
+        };
+      }
+
+      dataRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        const colName = MASTER_DB_COLUMNS[colNumber - 1];
+        const isCurrency = MASTER_DB_CURRENCY_COLS.has(colName);
+        const isNumericCenter =
+          colName === 'NO.' ||
+          colName === 'FECHA CARGA' ||
+          colName === 'HORA CARGA' ||
+          colName === 'LINEA' ||
+          colName === 'ECO UNIDAD' ||
+          colName === 'PLACAS UNIDAD' ||
+          colName === 'RENDIMIENTO' ||
+          colName === 'ODOMETRO INICIAL' ||
+          colName === 'ODOMETRO FINAL' ||
+          colName === 'KMS RECORRIDOS' ||
+          colName === 'DIESEL REAL CONSUMIDO' ||
+          colName === 'RENDIMIENTO REAL' ||
+          colName === 'FECHA RECIBO DE BITACORA';
+
+        cell.font = { name: 'Arial', size: 9, color: { argb: 'FF0F172A' } };
+        cell.border = thinBorder;
+
+        if (isCurrency) {
+          cell.numFmt = accountingFormat;
+          cell.alignment = { horizontal: 'right', vertical: 'middle' };
+        } else if (isNumericCenter) {
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        } else {
+          cell.alignment = { horizontal: 'left', vertical: 'middle', wrapText: false };
+        }
+
+        if (idx % 2 === 1) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDFEFF' } };
+        }
+      });
+    });
+
+    // Fila de TOTALES al pie con fórmulas SUM()
+    const lastDataRow = masterRows.length + 1;
+    const totalsRowValues = MASTER_DB_COLUMNS.map(col => (col === 'PLACAS UNIDAD' ? 'TOTALES' : ''));
+    const totalsRow = ws.addRow(totalsRowValues);
+    totalsRow.height = 24;
+
+    const sumColLetters: { colIdx: number; letter: string; key: string; isCurrency: boolean }[] = [
+      { colIdx: 15, letter: 'O', key: 'VIATICOS', isCurrency: true },
+      { colIdx: 16, letter: 'P', key: 'MANIOBRAS AUTORIZADAS', isCurrency: true },
+      { colIdx: 17, letter: 'Q', key: 'CASETAS', isCurrency: true },
+      { colIdx: 18, letter: 'R', key: 'CASETAS IAVE', isCurrency: true },
+      { colIdx: 19, letter: 'S', key: 'TOTAL CASETAS', isCurrency: true },
+      { colIdx: 20, letter: 'T', key: 'TRANSITO', isCurrency: true },
+      { colIdx: 21, letter: 'U', key: 'ESTACIONAMIENTO', isCurrency: true },
+      { colIdx: 22, letter: 'V', key: 'PERMISO / FITOSANITARIA', isCurrency: true },
+      { colIdx: 23, letter: 'W', key: 'HOTEL O PENSION', isCurrency: true },
+      { colIdx: 24, letter: 'X', key: 'TALACHA', isCurrency: true },
+      { colIdx: 25, letter: 'Y', key: 'ESTADIAS', isCurrency: true },
+      { colIdx: 26, letter: 'Z', key: 'OTROS', isCurrency: true },
+      { colIdx: 30, letter: 'AD', key: 'KMS RECORRIDOS', isCurrency: false },
+      { colIdx: 31, letter: 'AE', key: 'DIESEL REAL CONSUMIDO', isCurrency: false }
+    ];
+
+    sumColLetters.forEach(({ colIdx, letter, key, isCurrency }) => {
+      const cell = totalsRow.getCell(colIdx);
+      cell.value = {
+        formula: `SUM(${letter}2:${letter}${lastDataRow})`,
+        result: Number((columnSums[key] || 0).toFixed(2))
+      };
+      if (isCurrency) {
+        cell.numFmt = accountingFormat;
+      } else {
+        cell.numFmt = '#,##0.00';
+      }
+    });
+
+    totalsRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      const colName = MASTER_DB_COLUMNS[colNumber - 1];
+      cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FF0F172A' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+      cell.border = {
+        top: { style: 'medium', color: { argb: 'FF0F172A' } },
+        bottom: { style: 'medium', color: { argb: 'FF0F172A' } },
+        left: { style: 'thin', color: { argb: 'FF334155' } },
+        right: { style: 'thin', color: { argb: 'FF334155' } }
+      };
+      if (MASTER_DB_CURRENCY_COLS.has(colName)) {
+        cell.alignment = { horizontal: 'right', vertical: 'middle' };
+      } else {
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      }
+    });
+
+    // Auto-ajuste generoso de columnas para evitar ### y celdas encimadas
+    MASTER_DB_COLUMNS.forEach((colName, i) => {
+      const isCurrency = MASTER_DB_CURRENCY_COLS.has(colName);
+      const maxContent = Math.max(
+        0,
+        ...masterRows.map(r => {
+          const v = r.values[colName];
+          if (v === null || v === undefined) return 0;
+          if (isCurrency) return formatAccountingMXN(v).length + 2;
+          return String(v).length;
+        })
+      );
+      const minW = isCurrency ? 15 : colName === 'OBSERVACIONES' ? 32 : 14;
+      const headerW = Math.min(Math.ceil(colName.length * 1.05) + 4, 24);
+      const contentW = Math.ceil(maxContent * 1.15) + 5;
+      ws.getColumn(i + 1).width = Math.min(Math.max(minW, headerW, contentW), 65);
+    });
+
+    ws.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: MASTER_DB_COLUMNS.length }
+    };
+
+    // Helper para Hojas 2 y 3 (Detalle de Gastos y Auditoría)
+    const addStyledAuxiliarySheet = (sheetTitle: string, rows: Record<string, any>[]) => {
+      if (!rows || rows.length === 0) return;
+      const headers = Object.keys(rows[0]);
+      const auxWs = workbook.addWorksheet(sheetTitle, {
+        views: [{ state: 'frozen', ySplit: 1 }]
+      });
+      const hRow = auxWs.addRow(headers);
+      hRow.height = 26;
+      hRow.eachCell(cell => {
+        cell.font = { name: 'Arial', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E293B' } };
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        cell.border = thinBorder;
+      });
+      rows.forEach(r => {
+        const dRow = auxWs.addRow(headers.map(h => r[h]));
+        dRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+          const h = headers[colNumber - 1];
+          cell.font = { name: 'Arial', size: 9, color: { argb: 'FF0F172A' } };
+          cell.border = thinBorder;
+          if (h && h.includes('($)') && typeof cell.value === 'number') {
+            cell.numFmt = accountingFormat;
+            cell.alignment = { horizontal: 'right', vertical: 'middle' };
+          } else {
+            cell.alignment = { horizontal: 'left', vertical: 'middle' };
+          }
+        });
+      });
+      headers.forEach((h, i) => {
+        const isUrl = h.toLowerCase().includes('evidencia') || h.toLowerCase().includes('link');
+        const maxLen = Math.max(
+          h.length + 4,
+          ...rows.map(r => (r[h] !== null && r[h] !== undefined ? String(r[h]).length : 0))
+        );
+        auxWs.getColumn(i + 1).width = Math.min(Math.max(Math.ceil(maxLen * 1.15) + 5, 14), isUrl ? 55 : 90);
+      });
+      auxWs.autoFilter = {
+        from: { row: 1, column: 1 },
+        to: { row: 1, column: headers.length }
+      };
+    };
+
+    addStyledAuxiliarySheet('Detalle de Gastos', detailRows);
+    addStyledAuxiliarySheet('Auditoría de Eventos', auditEventsData);
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (err) {
+    console.error('Error generando Excel con ExcelJS, usando respaldo XLSX:', err);
+    const plainRows = masterRows.map(r => r.values);
+    const fallbackWb = XLSX.utils.book_new();
+    const wsMaster = XLSX.utils.json_to_sheet(plainRows);
+    formatExcelWorksheet(wsMaster, plainRows, MASTER_DB_CURRENCY_COLS);
+    XLSX.utils.book_append_sheet(fallbackWb, wsMaster, 'Base de Datos');
+    if (detailRows.length > 0) {
+      const wsDetail = XLSX.utils.json_to_sheet(detailRows);
+      formatExcelWorksheet(wsDetail, detailRows);
+      XLSX.utils.book_append_sheet(fallbackWb, wsDetail, 'Detalle de Gastos');
+    }
+    if (auditEventsData.length > 0) {
+      const wsAudit = XLSX.utils.json_to_sheet(auditEventsData);
+      formatExcelWorksheet(wsAudit, auditEventsData);
+      XLSX.utils.book_append_sheet(fallbackWb, wsAudit, 'Auditoría de Eventos');
+    }
+    XLSX.writeFile(fallbackWb, fileName);
   }
+};
+
+export const exportMasterDatabasePDF = (
+  trips: Trip[],
+  operators: Operator[],
+  units: Unit[] = [],
+  dateRangeLabel?: string
+) => {
+  if (!trips || trips.length === 0) {
+    alert('No hay registros de viajes disponibles para exportar en el período seleccionado.');
+    return;
+  }
+
+  const { masterRows, columnSums } = buildMasterDatabaseRows(trips, operators, units);
+
+  // Formato A3 Horizontal (420mm x 297mm) para mostrar las 34 columnas completas sin encimarse
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a3' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  // Encabezado institucional compacto
+  doc.setFillColor(15, 23, 42);
+  doc.rect(0, 0, pageWidth, 16, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(12);
+  doc.setFont('helvetica', 'bold');
+  doc.text('TBS LOGISTICS SERVICES — BASE DE DATOS MAESTRA CONSOLIDADA (1 FILA POR VIAJE)', 8, 10);
+
+  doc.setFontSize(7.5);
+  doc.setFont('helvetica', 'normal');
+  const periodText = dateRangeLabel ? `Filtro: ${dateRangeLabel}  |  ` : '';
+  doc.text(
+    `${periodText}Generado: ${new Date().toLocaleString('es-MX')}  |  Total Viajes: ${masterRows.length}`,
+    pageWidth - 8,
+    10,
+    { align: 'right' }
+  );
+
+  const head = [[...MASTER_DB_COLUMNS]];
+
+  const body = masterRows.map(rowObj =>
+    MASTER_DB_COLUMNS.map(col => {
+      const val = rowObj.values[col];
+      if (MASTER_DB_CURRENCY_COLS.has(col)) {
+        return formatAccountingMXN(val);
+      }
+      return val !== null && val !== undefined ? String(val) : '';
+    })
+  );
+
+  // Fila de totales al pie
+  const totalsFooterRow = MASTER_DB_COLUMNS.map(col => {
+    if (col === 'PLACAS UNIDAD') return 'TOTALES';
+    if (MASTER_DB_CURRENCY_COLS.has(col)) {
+      return formatAccountingMXN(columnSums[col] || 0);
+    }
+    if (col === 'KMS RECORRIDOS') {
+      const v = columnSums['KMS RECORRIDOS'] || 0;
+      return v > 0 ? v.toLocaleString('es-MX', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : '';
+    }
+    if (col === 'DIESEL REAL CONSUMIDO') {
+      const v = columnSums['DIESEL REAL CONSUMIDO'] || 0;
+      return v > 0 ? v.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '';
+    }
+    return '';
+  });
+
+  body.push(totalsFooterRow);
+
+  const totalRowIndex = body.length - 1;
+
+  // Anchos proporcionales que suman ~404mm (420mm - 16mm márgenes)
+  const columnWidths: Record<number, { cellWidth: number; halign?: 'left' | 'center' | 'right' }> = {
+    0: { cellWidth: 10, halign: 'center' },   // NO.
+    1: { cellWidth: 11, halign: 'center' },   // FECHA CARGA
+    2: { cellWidth: 8, halign: 'center' },    // HORA CARGA
+    3: { cellWidth: 14, halign: 'left' },     // CLIENTE
+    4: { cellWidth: 12, halign: 'left' },     // PROYECTO
+    5: { cellWidth: 16, halign: 'left' },     // FOLIO CLIENTE
+    6: { cellWidth: 15, halign: 'left' },     // LUGAR DE CARGA
+    7: { cellWidth: 13, halign: 'left' },     // DESTINO
+    8: { cellWidth: 16, halign: 'left' },     // CLIENTE DESCARGA
+    9: { cellWidth: 7, halign: 'center' },    // LINEA
+    10: { cellWidth: 18, halign: 'left' },    // OPERADOR
+    11: { cellWidth: 8, halign: 'center' },   // ECO UNIDAD
+    12: { cellWidth: 11, halign: 'center' },  // TIPO UNIDAD
+    13: { cellWidth: 11, halign: 'center' },  // PLACAS
+    14: { cellWidth: 10.5, halign: 'right' }, // VIATICOS
+    15: { cellWidth: 11, halign: 'right' },   // MANIOBRAS
+    16: { cellWidth: 10, halign: 'right' },   // CASETAS
+    17: { cellWidth: 10, halign: 'right' },   // CASETAS IAVE
+    18: { cellWidth: 10.5, halign: 'right' }, // TOTAL CASETAS
+    19: { cellWidth: 10, halign: 'right' },   // TRANSITO
+    20: { cellWidth: 10.5, halign: 'right' }, // ESTACIONAMIENTO
+    21: { cellWidth: 10.5, halign: 'right' }, // PERMISO/FITO
+    22: { cellWidth: 10, halign: 'right' },   // HOTEL/PENSION
+    23: { cellWidth: 10, halign: 'right' },   // TALACHA
+    24: { cellWidth: 10, halign: 'right' },   // ESTADIAS
+    25: { cellWidth: 10, halign: 'right' },   // OTROS
+    26: { cellWidth: 9, halign: 'center' },   // RENDIMIENTO
+    27: { cellWidth: 11, halign: 'center' },  // ODOM INICIAL
+    28: { cellWidth: 11, halign: 'center' },  // ODOM FINAL
+    29: { cellWidth: 11, halign: 'center' },  // KMS RECORRIDOS
+    30: { cellWidth: 11, halign: 'center' },  // DIESEL REAL
+    31: { cellWidth: 10, halign: 'center' },  // REND REAL
+    32: { cellWidth: 12, halign: 'center' },  // FECHA RECIBO
+    33: { cellWidth: 26, halign: 'left' }     // OBSERVACIONES
+  };
+
+  autoTable(doc, {
+    startY: 20,
+    head,
+    body,
+    theme: 'grid',
+    margin: { left: 8, right: 8, bottom: 12 },
+    styles: {
+      fontSize: 5.2,
+      cellPadding: 1.1,
+      lineColor: [71, 85, 105],
+      lineWidth: 0.15,
+      textColor: [15, 23, 42],
+      overflow: 'linebreak',
+      valign: 'middle'
+    },
+    headStyles: {
+      fillColor: [248, 250, 252],
+      textColor: [15, 23, 42],
+      fontStyle: 'bold',
+      fontSize: 4.8,
+      halign: 'center',
+      valign: 'middle',
+      lineColor: [15, 23, 42],
+      lineWidth: 0.25
+    },
+    columnStyles: columnWidths,
+    didParseCell: (data) => {
+      const colName = MASTER_DB_COLUMNS[data.column.index];
+      if (data.section === 'head') {
+        if (MASTER_DB_BLUE_HEADERS.has(colName)) {
+          data.cell.styles.textColor = [0, 112, 192];
+        } else if (MASTER_DB_RED_HEADERS.has(colName)) {
+          data.cell.styles.textColor = [192, 0, 0];
+        }
+      }
+      if (data.section === 'body' && data.row.index === totalRowIndex) {
+        data.cell.styles.fillColor = [226, 232, 240];
+        data.cell.styles.fontStyle = 'bold';
+        data.cell.styles.lineWidth = 0.25;
+      }
+    },
+    didDrawPage: () => {
+      doc.setFontSize(6.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text(
+        `Página ${(doc as any).internal.getCurrentPageInfo().pageNumber}  |  TBS Logistics Services — Base de Datos Maestra`,
+        pageWidth / 2,
+        pageHeight - 5,
+        { align: 'center' }
+      );
+    }
+  });
 
   const cleanLabel = dateRangeLabel ? `_${dateRangeLabel.replace(/[^a-zA-Z0-9_-]/g, '_')}` : '';
-  XLSX.writeFile(workbook, `TBS_Base_de_Datos_Maestra${cleanLabel}_${getFormattedTimestamp()}.xlsx`);
+  doc.save(`TBS_Base_de_Datos_Maestra${cleanLabel}_${getFormattedTimestamp()}.pdf`);
 };
 

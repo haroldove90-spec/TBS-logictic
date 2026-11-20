@@ -1,33 +1,82 @@
 
 import { CreditCardIcon } from 'lucide-react';
 
-// --- SONIDOS DEL SISTEMA ---
-export const playSound = (type: 'success' | 'alert' | 'notification' | 'info', isCritical: boolean = false): HTMLAudioElement | null => {
-  let src = '';
-  switch (type) {
-    case 'success':
-      src = 'https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3'; 
-      break;
-    case 'alert':
-      src = 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3'; 
-      break;
-    case 'notification':
-    case 'info':
-    default:
-      src = 'https://assets.mixkit.co/active_storage/sfx/2346/2346-preview.mp3'; 
-      break;
+// Generador ligero de tonos WAV en memoria (evita fallos de carga externa y warnings de audio)
+const SOUND_URI_CACHE: Record<string, string> = {};
+
+const buildToneWavDataUri = (frequencies: number[], stepDurationSec: number = 0.12): string => {
+  const sampleRate = 22050;
+  const stepSamples = Math.floor(sampleRate * stepDurationSec);
+  const totalSamples = stepSamples * frequencies.length;
+  const buffer = new ArrayBuffer(44 + totalSamples * 2);
+  const view = new DataView(buffer);
+
+  const writeStr = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + totalSamples * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // Mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, totalSamples * 2, true);
+
+  let sampleIdx = 0;
+  for (let fIdx = 0; fIdx < frequencies.length; fIdx++) {
+    const freq = frequencies[fIdx];
+    for (let i = 0; i < stepSamples; i++) {
+      const t = i / sampleRate;
+      const env = Math.min(1, i / 200) * Math.min(1, (stepSamples - i) / 400);
+      const val = Math.sin(2 * Math.PI * freq * t) * 0.25 * env;
+      view.setInt16(44 + sampleIdx * 2, Math.max(-1, Math.min(1, val)) * 32767, true);
+      sampleIdx++;
+    }
   }
 
-  try {
-    const audio = new Audio(src);
-    audio.volume = 1.0;
-    if (isCritical) {
-        audio.loop = true;
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return `data:audio/wav;base64,${btoa(binary)}`;
+};
+
+const getSystemSoundUri = (type: 'success' | 'alert' | 'notification' | 'info'): string => {
+  if (!SOUND_URI_CACHE[type]) {
+    if (type === 'success') {
+      SOUND_URI_CACHE[type] = buildToneWavDataUri([587.33, 880], 0.11);
+    } else if (type === 'alert') {
+      SOUND_URI_CACHE[type] = buildToneWavDataUri([880, 622.25, 880], 0.16);
+    } else {
+      SOUND_URI_CACHE[type] = buildToneWavDataUri([740], 0.12);
     }
-    audio.play().catch(e => console.warn("Audio autoplay blocked", e));
+  }
+  return SOUND_URI_CACHE[type];
+};
+
+// --- SONIDOS DEL SISTEMA ---
+export const playSound = (type: 'success' | 'alert' | 'notification' | 'info', isCritical: boolean = false): HTMLAudioElement | null => {
+  try {
+    const src = getSystemSoundUri(type);
+    const audio = new Audio(src);
+    audio.volume = 0.8;
+    if (isCritical) {
+      audio.loop = true;
+    }
+    const playPromise = audio.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(() => {
+        // El navegador bloquea el autoplay antes de la primera interacción del usuario; se omite silenciosamente.
+      });
+    }
     return audio;
-  } catch (error) {
-    console.error("Error playing sound", error);
+  } catch {
     return null;
   }
 };

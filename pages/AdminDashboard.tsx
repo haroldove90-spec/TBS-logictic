@@ -18,6 +18,13 @@ import {
   exportExpensesExcel,
   exportExpensesPDF,
   exportMasterDatabaseExcel,
+  exportMasterDatabasePDF,
+  buildMasterDatabaseRows,
+  MASTER_DB_COLUMNS,
+  MASTER_DB_CURRENCY_COLS,
+  MASTER_DB_BLUE_HEADERS,
+  MASTER_DB_RED_HEADERS,
+  formatAccountingMXN,
   extractFlatExpenses,
   FlatExpenseRow,
   getDateRange,
@@ -118,6 +125,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
   // Estado para Módulo de Gastos y Edición de Gastos por Operador
   const [expenseSearch, setExpenseSearch] = useState('');
   const [expenseCategoryFilter, setExpenseCategoryFilter] = useState<'ALL' | 'OPERATIVO' | 'GASTOS' | 'MANTENIMIENTO'>('ALL');
+  // Filtros avanzados para Vista Previa y Exportación de Base de Datos Maestra
+  const [dbPeriodMode, setDbPeriodMode] = useState<'ALL' | 'DAY' | 'WEEK' | 'MONTH' | 'CUSTOM'>('ALL');
+  const [dbDayDate, setDbDayDate] = useState<string>(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  });
+  const [dbWeekAnchorDate, setDbWeekAnchorDate] = useState<string>(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  });
+  const [dbMonthNum, setDbMonthNum] = useState<number>(() => new Date().getMonth() + 1);
+  const [dbMonthYear, setDbMonthYear] = useState<number>(() => new Date().getFullYear());
+  const [dbCustomStart, setDbCustomStart] = useState<string>('');
+  const [dbCustomEnd, setDbCustomEnd] = useState<string>('');
+  const [dbOperatorFilter, setDbOperatorFilter] = useState<string>('ALL');
+  const [dbUnitFilter, setDbUnitFilter] = useState<string>('ALL');
+  const [dbClientFilter, setDbClientFilter] = useState<string>('ALL');
+  const [dbProjectFilter, setDbProjectFilter] = useState<string>('ALL');
+  const [dbSearch, setDbSearch] = useState<string>('');
   const [editingExpense, setEditingExpense] = useState<{
     tripId: string;
     tripCode: string;
@@ -1288,6 +1314,190 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
     return matchesDate && matchesStat;
   });
 
+  // =========================================================================
+  // FILTROS DEDICADOS PARA EXPORTACIÓN DE BASE DE DATOS MAESTRA
+  // (Por Día, Por Semana, Por Mes, Rango, Operador, Unidad/ECO, Cliente, Proyecto y Estatus)
+  // =========================================================================
+  const DB_MONTH_NAMES = [
+    'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+  ];
+
+  const getLocalYMD = (d: Date): string =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  const getWeekBoundsFromDate = (ymd: string): { start: string; end: string } => {
+    const parts = (ymd || getLocalYMD(new Date())).split('-').map(Number);
+    const y = parts[0] || new Date().getFullYear();
+    const m = parts[1] || (new Date().getMonth() + 1);
+    const day = parts[2] || new Date().getDate();
+    const base = new Date(y, m - 1, day);
+    const dow = base.getDay();
+    const diffToMonday = dow === 0 ? -6 : 1 - dow;
+    const monday = new Date(y, m - 1, day + diffToMonday);
+    const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+    return { start: getLocalYMD(monday), end: getLocalYMD(sunday) };
+  };
+
+  const dbDateRange: DateRangeResult = (() => {
+    if (dbPeriodMode === 'DAY' && dbDayDate) {
+      return { start: dbDayDate, end: dbDayDate, label: `Dia_${dbDayDate}` };
+    }
+    if (dbPeriodMode === 'WEEK') {
+      const wb = getWeekBoundsFromDate(dbWeekAnchorDate);
+      return { start: wb.start, end: wb.end, label: `Semana_${wb.start}_al_${wb.end}` };
+    }
+    if (dbPeriodMode === 'MONTH') {
+      const mm = String(dbMonthNum).padStart(2, '0');
+      const lastDay = new Date(dbMonthYear, dbMonthNum, 0).getDate();
+      const start = `${dbMonthYear}-${mm}-01`;
+      const end = `${dbMonthYear}-${mm}-${String(lastDay).padStart(2, '0')}`;
+      return { start, end, label: `Mes_${DB_MONTH_NAMES[dbMonthNum - 1]}_${dbMonthYear}` };
+    }
+    if (dbPeriodMode === 'CUSTOM' && (dbCustomStart || dbCustomEnd)) {
+      const label =
+        dbCustomStart && dbCustomEnd
+          ? `Rango_${dbCustomStart}_al_${dbCustomEnd}`
+          : dbCustomStart
+            ? `Desde_${dbCustomStart}`
+            : `Hasta_${dbCustomEnd}`;
+      return { start: dbCustomStart, end: dbCustomEnd, label };
+    }
+    return { start: '', end: '', label: 'Todos' };
+  })();
+
+  const resolveTripOperatorName = (trip: Trip): string => {
+    if (trip.operator_id) {
+      const byId = operatorsList.find(op => op.id === trip.operator_id || op.username === trip.operator_id);
+      if (byId) return byId.name;
+    }
+    if (trip.plate) {
+      const cleanPlate = trip.plate.trim().toLowerCase();
+      const byPlate = operatorsList.find(op => op.plate && op.plate.trim().toLowerCase() === cleanPlate);
+      if (byPlate) return byPlate.name;
+    }
+    return 'Sin asignar';
+  };
+
+  const dbAvailableYears: number[] = Array.from(
+    new Set<number>([
+      new Date().getFullYear(),
+      new Date().getFullYear() - 1,
+      ...trips
+        .map(t => Number(String(t.date || '').slice(0, 4)))
+        .filter(y => y >= 2020 && y <= 2100)
+    ])
+  ).sort((a, b) => b - a);
+
+  const dbUniqueClients: string[] = Array.from(
+    new Set<string>(trips.map(t => (t.client || '').trim()).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
+
+  const dbUniqueProjects: string[] = Array.from(
+    new Set<string>(trips.map(t => (t.project || '').trim()).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
+
+  const dbUniqueOperators: string[] = Array.from(
+    new Set<string>([
+      ...operatorsList.filter(op => op.role !== 'ADMIN').map(op => op.name.trim()).filter(Boolean),
+      ...trips.map(t => resolveTripOperatorName(t)).filter(name => name && name !== 'Sin asignar')
+    ])
+  ).sort((a, b) => a.localeCompare(b));
+
+  const dbUniqueUnits: { plate: string; eco: string; label: string }[] = (() => {
+    const map: Record<string, { plate: string; eco: string; label: string }> = {};
+    unitsList.forEach(u => {
+      if (!u.plate) return;
+      const key = u.plate.trim().toUpperCase();
+      map[key] = {
+        plate: u.plate.trim(),
+        eco: u.eco || u.plate.trim(),
+        label: u.eco ? `ECO ${u.eco} — ${u.plate.trim()}` : u.plate.trim()
+      };
+    });
+    trips.forEach(t => {
+      if (!t.plate) return;
+      const key = t.plate.trim().toUpperCase();
+      if (!map[key]) {
+        map[key] = { plate: t.plate.trim(), eco: t.plate.trim(), label: t.plate.trim() };
+      }
+    });
+    return Object.values(map).sort((a, b) => a.label.localeCompare(b.label, 'es', { numeric: true }));
+  })();
+
+  const filteredDatabaseTrips = trips.filter(trip => {
+    const matchesDate = filterByDateRange(trip.date, dbDateRange);
+    const matchesStat = matchesStatus(trip, statusFilter);
+    const matchesClient = dbClientFilter === 'ALL' || (trip.client || '').trim() === dbClientFilter;
+    const matchesProject = dbProjectFilter === 'ALL' || (trip.project || '').trim() === dbProjectFilter;
+
+    const opName = resolveTripOperatorName(trip);
+    const matchesOperator = dbOperatorFilter === 'ALL' || opName.trim().toLowerCase() === dbOperatorFilter.trim().toLowerCase();
+
+    const matchesUnit =
+      dbUnitFilter === 'ALL' ||
+      (trip.plate || '').trim().toLowerCase() === dbUnitFilter.trim().toLowerCase();
+
+    if (!matchesDate || !matchesStat || !matchesClient || !matchesProject || !matchesOperator || !matchesUnit) {
+      return false;
+    }
+
+    const q = dbSearch.toLowerCase().trim();
+    if (!q) return true;
+
+    const unitEco = unitsList.find(u => u.plate === trip.plate)?.eco || '';
+    return (
+      (trip.code || '').toLowerCase().includes(q) ||
+      (trip.folioCliente || '').toLowerCase().includes(q) ||
+      (trip.client || '').toLowerCase().includes(q) ||
+      (trip.project || '').toLowerCase().includes(q) ||
+      (trip.origin || '').toLowerCase().includes(q) ||
+      (trip.destination || '').toLowerCase().includes(q) ||
+      (trip.plate || '').toLowerCase().includes(q) ||
+      (trip.observaciones || '').toLowerCase().includes(q) ||
+      unitEco.toLowerCase().includes(q) ||
+      opName.toLowerCase().includes(q)
+    );
+  });
+
+  const dbHasActiveFilters =
+    dbPeriodMode !== 'ALL' ||
+    statusFilter !== 'ALL' ||
+    dbOperatorFilter !== 'ALL' ||
+    dbUnitFilter !== 'ALL' ||
+    dbClientFilter !== 'ALL' ||
+    dbProjectFilter !== 'ALL' ||
+    dbSearch.trim() !== '';
+
+  const dbExportLabel = (() => {
+    const parts: string[] = [dbDateRange.label];
+    if (dbOperatorFilter !== 'ALL') parts.push(`Operador_${dbOperatorFilter}`);
+    if (dbUnitFilter !== 'ALL') {
+      const u = dbUniqueUnits.find(x => x.plate.toLowerCase() === dbUnitFilter.toLowerCase());
+      parts.push(`ECO_${u?.eco || dbUnitFilter}`);
+    }
+    if (dbClientFilter !== 'ALL') parts.push(`Cliente_${dbClientFilter}`);
+    if (dbProjectFilter !== 'ALL') parts.push(`Proyecto_${dbProjectFilter}`);
+    if (statusFilter !== 'ALL') parts.push(`Estatus_${statusFilter}`);
+    return parts.join('_');
+  })();
+
+  const resetAllDatabaseFilters = () => {
+    setDbPeriodMode('ALL');
+    setDbCustomStart('');
+    setDbCustomEnd('');
+    setDbOperatorFilter('ALL');
+    setDbUnitFilter('ALL');
+    setDbClientFilter('ALL');
+    setDbProjectFilter('ALL');
+    setDbSearch('');
+    setStatusFilter('ALL');
+  };
+
+  const masterDbPreview = activeTab === 'DATABASE'
+    ? buildMasterDatabaseRows(filteredDatabaseTrips, operatorsList, unitsList)
+    : null;
+
   const inputStyle = "w-full bg-gray-100 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 focus:bg-white block p-3 transition-colors outline-none placeholder-gray-500";
   const labelStyle = "block text-sm font-bold text-gray-700 mb-1.5";
   
@@ -2108,10 +2318,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                           type="button"
                           onClick={() => exportMasterDatabaseExcel(filteredHistoryTrips, operatorsList, unitsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`)}
                           className="flex items-center gap-1.5 px-4 py-2 bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs sm:text-sm font-black rounded-xl shadow transition active:scale-95"
-                          title="Descargar Base de Datos Maestra Consolidada (1 fila por viaje)"
+                          title="Descargar Base de Datos Maestra Consolidada en Excel (34 columnas, 1 fila por viaje)"
                       >
                           <Database className="h-4 w-4 text-slate-900" />
                           <span>BD Maestra (Excel)</span>
+                      </button>
+                      <button
+                          type="button"
+                          onClick={() => exportMasterDatabasePDF(filteredHistoryTrips, operatorsList, unitsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`)}
+                          className="flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs sm:text-sm font-black rounded-xl shadow transition active:scale-95"
+                          title="Descargar Base de Datos Maestra Consolidada en PDF formato sábana horizontal (34 columnas)"
+                      >
+                          <FileText className="h-4 w-4 text-white" />
+                          <span>BD Maestra (PDF)</span>
                       </button>
                       <button
                           type="button"
@@ -2237,10 +2456,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                         type="button"
                         onClick={() => exportMasterDatabaseExcel(filteredTrips, operatorsList, unitsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`)} 
                         className="flex items-center gap-1.5 px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black rounded-lg shadow-sm transition active:scale-95"
-                        title="Descargar Base de Datos Maestra (1 fila por viaje con desglose de gastos y rendimiento)"
+                        title="Descargar Base de Datos Maestra en Excel (34 columnas, 1 fila por viaje)"
                     >
                         <Database className="h-4 w-4" />
-                        <span>BD Maestra</span>
+                        <span>BD Maestra Excel</span>
+                    </button>
+                    <button 
+                        type="button"
+                        onClick={() => exportMasterDatabasePDF(filteredTrips, operatorsList, unitsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`)} 
+                        className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black rounded-lg shadow-sm transition active:scale-95"
+                        title="Descargar Base de Datos Maestra en PDF formato sábana horizontal (34 columnas)"
+                    >
+                        <FileText className="h-4 w-4" />
+                        <span>BD Maestra PDF</span>
                     </button>
                     <button 
                         type="button"
@@ -2357,7 +2585,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
       )}
 
       {activeTab === 'DATABASE' && (
-          <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="max-w-6xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-300">
               {/* Tarjeta Principal de Supabase */}
               <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden">
                   <div className="bg-gradient-to-r from-cyan-800 via-teal-800 to-slate-900 p-6 text-white flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -2368,7 +2596,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                               </div>
                               <div>
                                   <h2 className="text-2xl font-black tracking-tight">Base de Datos</h2>
-                                  <p className="text-cyan-100 text-sm">Panel de administración de Supabase (Acceso exclusivo Administrador)</p>
+                                  <p className="text-cyan-100 text-sm">Panel de exportación consolidada y administración de Supabase (Acceso exclusivo Administrador)</p>
                               </div>
                           </div>
                       </div>
@@ -2383,7 +2611,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                       </a>
                   </div>
                   <div className="p-6 sm:p-8 space-y-6">
-                      {/* EXPORTACIÓN MAESTRA DE BASE DE DATOS (1 FILA POR VIAJE) */}
+                      {/* EXPORTACIÓN MAESTRA DE BASE DE DATOS (34 COLUMNAS — 1 FILA POR VIAJE) */}
                       <div className="bg-gradient-to-br from-emerald-50 via-teal-50 to-slate-50 border-2 border-emerald-300 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
                           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                               <div className="flex items-start gap-3">
@@ -2392,24 +2620,422 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                                   </div>
                                   <div>
                                       <h3 className="text-lg font-black text-slate-900 tracking-tight">
-                                          Exportar Base de Datos Maestra (Formato Consolidado)
+                                          Exportar Base de Datos Maestra (Formato Consolidado — 34 Columnas)
                                       </h3>
                                       <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
-                                          Descarga 1 fila por viaje con todas las columnas operativas, desglose horizontal de gastos (Viáticos, Maniobras, Casetas, IAVE, Hotel, Talacha, Estadías, etc.), odómetros, diesel consumido y rendimiento real. Incluye hojas adicionales de Detalle de Gastos y Auditoría.
+                                          Filtra y descarga por Día, Semana, Mes, Operador, Unidad (ECO), Cliente, Proyecto o Estatus. 1 fila por viaje con los 12 rubros de gastos, odómetros, diesel y rendimiento.
                                       </p>
                                   </div>
                               </div>
-                              <button
-                                  type="button"
-                                  onClick={() => exportMasterDatabaseExcel(filteredHistoryTrips, operatorsList, unitsList, `${activeDateRange.label}${statusFilter !== 'ALL' ? `_${statusFilter}` : ''}`)}
-                                  className="flex items-center justify-center gap-2 px-5 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl shadow-lg hover:shadow-emerald-600/25 transition-all active:scale-95 whitespace-nowrap shrink-0 text-sm"
-                              >
-                                  <Download className="h-5 w-5" />
-                                  <span>Descargar Base de Datos (Excel)</span>
-                              </button>
+                              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                                  <button
+                                      type="button"
+                                      onClick={() => exportMasterDatabaseExcel(
+                                        filteredDatabaseTrips,
+                                        operatorsList,
+                                        unitsList,
+                                        dbExportLabel
+                                      )}
+                                      className="flex items-center justify-center gap-2 px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl shadow-lg hover:shadow-emerald-600/25 transition-all active:scale-95 whitespace-nowrap text-xs sm:text-sm"
+                                  >
+                                      <FileSpreadsheet className="h-4 w-4" />
+                                      <span>Descargar Excel (BD Maestra)</span>
+                                  </button>
+                                  <button
+                                      type="button"
+                                      onClick={() => exportMasterDatabasePDF(
+                                        filteredDatabaseTrips,
+                                        operatorsList,
+                                        unitsList,
+                                        dbExportLabel
+                                      )}
+                                      className="flex items-center justify-center gap-2 px-4 py-3 bg-rose-600 hover:bg-rose-700 text-white font-black rounded-xl shadow-lg hover:shadow-rose-600/25 transition-all active:scale-95 whitespace-nowrap text-xs sm:text-sm"
+                                  >
+                                      <FileText className="h-4 w-4" />
+                                      <span>Descargar PDF (Sábana)</span>
+                                  </button>
+                              </div>
                           </div>
-                          {renderDateFilterToolbar(`Registros a exportar: ${filteredHistoryTrips.length} de ${trips.length} viajes (${activeDateRange.label})`)}
+
+                          {/* SELECTOR DE PERÍODO DEDICADO: TODOS / POR DÍA / POR SEMANA / POR MES / RANGO */}
+                          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm space-y-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                      <span className="font-black text-slate-600 uppercase tracking-wider text-[11px] mr-1 flex items-center gap-1">
+                                          <Calendar className="w-3.5 h-3.5 text-emerald-600" /> Exportar por:
+                                      </span>
+                                      {([
+                                        { id: 'ALL', label: 'Todos' },
+                                        { id: 'DAY', label: 'Por Día' },
+                                        { id: 'WEEK', label: 'Por Semana' },
+                                        { id: 'MONTH', label: 'Por Mes' },
+                                        { id: 'CUSTOM', label: 'Rango Personalizado' }
+                                      ] as const).map(opt => (
+                                          <button
+                                              key={opt.id}
+                                              type="button"
+                                              onClick={() => setDbPeriodMode(opt.id)}
+                                              className={`px-3 py-1.5 rounded-lg font-black transition-all text-xs ${
+                                                  dbPeriodMode === opt.id
+                                                      ? 'bg-emerald-600 text-white shadow-sm'
+                                                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                              }`}
+                                          >
+                                              {opt.label}
+                                          </button>
+                                      ))}
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                      <span className="text-[11px] font-black bg-emerald-50 text-emerald-800 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                                          {filteredDatabaseTrips.length} de {trips.length} viajes listos
+                                      </span>
+                                      {dbHasActiveFilters && (
+                                          <button
+                                              type="button"
+                                              onClick={resetAllDatabaseFilters}
+                                              className="text-xs font-bold text-rose-600 hover:text-rose-800 underline px-1.5 py-1 whitespace-nowrap"
+                                          >
+                                              Limpiar todos
+                                          </button>
+                                      )}
+                                  </div>
+                              </div>
+
+                              {/* Controles específicos según el período elegido */}
+                              {dbPeriodMode === 'DAY' && (
+                                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 text-xs">
+                                      <span className="font-bold text-slate-500">Elige el día:</span>
+                                      <input
+                                          type="date"
+                                          value={dbDayDate}
+                                          onChange={e => setDbDayDate(e.target.value)}
+                                          className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                                      />
+                                      <button
+                                          type="button"
+                                          onClick={() => setDbDayDate(getLocalYMD(new Date()))}
+                                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition"
+                                      >
+                                          Hoy
+                                      </button>
+                                      <button
+                                          type="button"
+                                          onClick={() => {
+                                              const y = new Date();
+                                              y.setDate(y.getDate() - 1);
+                                              setDbDayDate(getLocalYMD(y));
+                                          }}
+                                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition"
+                                      >
+                                          Ayer
+                                      </button>
+                                  </div>
+                              )}
+
+                              {dbPeriodMode === 'WEEK' && (
+                                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 text-xs">
+                                      <span className="font-bold text-slate-500">Cualquier día de la semana deseada:</span>
+                                      <input
+                                          type="date"
+                                          value={dbWeekAnchorDate}
+                                          onChange={e => setDbWeekAnchorDate(e.target.value)}
+                                          className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                                      />
+                                      <button
+                                          type="button"
+                                          onClick={() => setDbWeekAnchorDate(getLocalYMD(new Date()))}
+                                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition"
+                                      >
+                                          Esta Semana
+                                      </button>
+                                      <button
+                                          type="button"
+                                          onClick={() => {
+                                              const prev = new Date();
+                                              prev.setDate(prev.getDate() - 7);
+                                              setDbWeekAnchorDate(getLocalYMD(prev));
+                                          }}
+                                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition"
+                                      >
+                                          Semana Pasada
+                                      </button>
+                                      <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg font-bold">
+                                          Lunes {dbDateRange.start} al Domingo {dbDateRange.end}
+                                      </span>
+                                  </div>
+                              )}
+
+                              {dbPeriodMode === 'MONTH' && (
+                                  <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 text-xs">
+                                      <span className="font-bold text-slate-500">Elige Mes y Año:</span>
+                                      <select
+                                          value={dbMonthNum}
+                                          onChange={e => setDbMonthNum(Number(e.target.value))}
+                                          className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                                      >
+                                          {DB_MONTH_NAMES.map((mName, idx) => (
+                                              <option key={mName} value={idx + 1}>{mName}</option>
+                                          ))}
+                                      </select>
+                                      <select
+                                          value={dbMonthYear}
+                                          onChange={e => setDbMonthYear(Number(e.target.value))}
+                                          className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                                      >
+                                          {dbAvailableYears.map(yr => (
+                                              <option key={yr} value={yr}>{yr}</option>
+                                          ))}
+                                      </select>
+                                      <button
+                                          type="button"
+                                          onClick={() => {
+                                              const now = new Date();
+                                              setDbMonthNum(now.getMonth() + 1);
+                                              setDbMonthYear(now.getFullYear());
+                                          }}
+                                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition"
+                                      >
+                                          Este Mes
+                                      </button>
+                                      <button
+                                          type="button"
+                                          onClick={() => {
+                                              const d = new Date();
+                                              d.setMonth(d.getMonth() - 1);
+                                              setDbMonthNum(d.getMonth() + 1);
+                                              setDbMonthYear(d.getFullYear());
+                                          }}
+                                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg transition"
+                                      >
+                                          Mes Pasado
+                                      </button>
+                                      <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg font-bold">
+                                          {dbDateRange.start} al {dbDateRange.end}
+                                      </span>
+                                  </div>
+                              )}
+
+                              {dbPeriodMode === 'CUSTOM' && (
+                                  <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100 text-xs">
+                                      <div className="flex items-center gap-1.5">
+                                          <span className="font-bold text-slate-500">Desde:</span>
+                                          <input
+                                              type="date"
+                                              value={dbCustomStart}
+                                              onChange={e => setDbCustomStart(e.target.value)}
+                                              className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                                          />
+                                      </div>
+                                      <div className="flex items-center gap-1.5">
+                                          <span className="font-bold text-slate-500">Hasta:</span>
+                                          <input
+                                              type="date"
+                                              value={dbCustomEnd}
+                                              onChange={e => setDbCustomEnd(e.target.value)}
+                                              className="bg-slate-50 border border-slate-300 rounded-lg px-3 py-1.5 font-bold text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                                          />
+                                      </div>
+                                  </div>
+                              )}
+                          </div>
+
+                          {/* Filtro Rápido por Estatus */}
                           {renderStatusFilterToolbar()}
+
+                          {/* FILTROS COMBINABLES POR OPERADOR, UNIDAD (ECO), CLIENTE, PROYECTO Y BÚSQUEDA */}
+                          <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-sm space-y-3">
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                                  {/* Operador */}
+                                  <div className="flex flex-col gap-1">
+                                      <label className="text-[10px] font-black uppercase text-slate-500 flex items-center gap-1">
+                                          <User className="h-3 w-3 text-emerald-600" /> Operador
+                                      </label>
+                                      <select
+                                          value={dbOperatorFilter}
+                                          onChange={e => setDbOperatorFilter(e.target.value)}
+                                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500"
+                                      >
+                                          <option value="ALL">Todos los Operadores ({dbUniqueOperators.length})</option>
+                                          {dbUniqueOperators.map(op => (
+                                              <option key={op} value={op}>{op}</option>
+                                          ))}
+                                      </select>
+                                  </div>
+
+                                  {/* Unidad / ECO */}
+                                  <div className="flex flex-col gap-1">
+                                      <label className="text-[10px] font-black uppercase text-slate-500 flex items-center gap-1">
+                                          <Truck className="h-3 w-3 text-emerald-600" /> Unidad / ECO
+                                      </label>
+                                      <select
+                                          value={dbUnitFilter}
+                                          onChange={e => setDbUnitFilter(e.target.value)}
+                                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500"
+                                      >
+                                          <option value="ALL">Todas las Unidades ({dbUniqueUnits.length})</option>
+                                          {dbUniqueUnits.map(u => (
+                                              <option key={u.plate} value={u.plate}>{u.label}</option>
+                                          ))}
+                                      </select>
+                                  </div>
+
+                                  {/* Cliente */}
+                                  <div className="flex flex-col gap-1">
+                                      <label className="text-[10px] font-black uppercase text-slate-500 flex items-center gap-1">
+                                          <Building2 className="h-3 w-3 text-emerald-600" /> Cliente
+                                      </label>
+                                      <select
+                                          value={dbClientFilter}
+                                          onChange={e => setDbClientFilter(e.target.value)}
+                                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500"
+                                      >
+                                          <option value="ALL">Todos los Clientes ({dbUniqueClients.length})</option>
+                                          {dbUniqueClients.map(client => (
+                                              <option key={client} value={client}>{client}</option>
+                                          ))}
+                                      </select>
+                                  </div>
+
+                                  {/* Proyecto */}
+                                  <div className="flex flex-col gap-1">
+                                      <label className="text-[10px] font-black uppercase text-slate-500 flex items-center gap-1">
+                                          <Briefcase className="h-3 w-3 text-emerald-600" /> Proyecto
+                                      </label>
+                                      <select
+                                          value={dbProjectFilter}
+                                          onChange={e => setDbProjectFilter(e.target.value)}
+                                          className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500"
+                                      >
+                                          <option value="ALL">Todos los Proyectos ({dbUniqueProjects.length})</option>
+                                          {dbUniqueProjects.map(proj => (
+                                              <option key={proj} value={proj}>{proj}</option>
+                                          ))}
+                                      </select>
+                                  </div>
+                              </div>
+
+                              {/* Buscador libre adicional */}
+                              <div className="relative">
+                                  <Search className="h-4 w-4 text-slate-400 absolute left-3 top-2.5" />
+                                  <input
+                                      type="text"
+                                      value={dbSearch}
+                                      onChange={e => setDbSearch(e.target.value)}
+                                      placeholder="Búsqueda libre por Folio Cliente, No. Viaje, Lugar de Carga, Destino u Observaciones..."
+                                      className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                                  />
+                                  {dbSearch && (
+                                      <button
+                                          type="button"
+                                          onClick={() => setDbSearch('')}
+                                          className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-700"
+                                          title="Limpiar búsqueda"
+                                      >
+                                          <X className="h-4 w-4" />
+                                      </button>
+                                  )}
+                              </div>
+                          </div>
+
+                          {/* Vista Previa de las 34 Columnas exactas antes de exportar */}
+                          <div className="bg-white rounded-xl border border-slate-300 shadow-sm overflow-hidden">
+                              <div className="px-4 py-2.5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-2">
+                                  <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider">
+                                      <Eye className="h-4 w-4 text-emerald-400" />
+                                      <span>Vista Previa de Base de Datos ({filteredDatabaseTrips.length} viajes · 34 columnas)</span>
+                                  </div>
+                                  <span className="text-[11px] text-slate-300">
+                                      Desliza horizontalmente para verificar gastos, odómetros y rendimientos antes de exportar
+                                  </span>
+                              </div>
+                              <div className="overflow-x-auto max-h-[420px]">
+                                  <table className="min-w-max border-collapse text-[11px]">
+                                      <thead className="sticky top-0 z-10 bg-slate-100 shadow-sm">
+                                          <tr>
+                                              {MASTER_DB_COLUMNS.map(col => {
+                                                  const isBlue = MASTER_DB_BLUE_HEADERS.has(col);
+                                                  const isRed = MASTER_DB_RED_HEADERS.has(col);
+                                                  return (
+                                                      <th
+                                                          key={col}
+                                                          className={`px-2.5 py-2 border border-slate-300 text-center font-black whitespace-nowrap uppercase tracking-tight ${
+                                                              isBlue ? 'text-[#0070C0]' : isRed ? 'text-[#C00000]' : 'text-slate-900'
+                                                          }`}
+                                                      >
+                                                          {col}
+                                                      </th>
+                                                  );
+                                              })}
+                                          </tr>
+                                      </thead>
+                                      <tbody>
+                                          {!masterDbPreview || masterDbPreview.masterRows.length === 0 ? (
+                                              <tr>
+                                                  <td colSpan={MASTER_DB_COLUMNS.length} className="px-6 py-10 text-center text-slate-400 font-bold">
+                                                      No hay viajes que coincidan con los filtros seleccionados.
+                                                  </td>
+                                              </tr>
+                                          ) : (
+                                              <>
+                                                  {masterDbPreview.masterRows.map((rowObj, rowIdx) => (
+                                                      <tr
+                                                          key={rowObj.tripId || rowIdx}
+                                                          className={rowIdx % 2 === 0 ? 'bg-white hover:bg-emerald-50/40' : 'bg-slate-50/70 hover:bg-emerald-50/40'}
+                                                      >
+                                                          {MASTER_DB_COLUMNS.map(col => {
+                                                              const val = rowObj.values[col];
+                                                              const isCurr = MASTER_DB_CURRENCY_COLS.has(col);
+                                                              return (
+                                                                  <td
+                                                                      key={col}
+                                                                      className={`px-2.5 py-1.5 border border-slate-200 whitespace-nowrap ${
+                                                                          isCurr ? 'text-right font-mono text-slate-800' : 'text-left text-slate-700'
+                                                                      } ${col === 'NO.' ? 'font-bold text-slate-900 text-center' : ''}`}
+                                                                  >
+                                                                      {isCurr ? formatAccountingMXN(val) : (val !== '' && val !== null && val !== undefined ? String(val) : '')}
+                                                                  </td>
+                                                              );
+                                                          })}
+                                                      </tr>
+                                                  ))}
+                                                  {/* Fila de TOTALES en Vista Previa */}
+                                                  <tr className="bg-slate-200 font-black text-slate-900 sticky bottom-0">
+                                                      {MASTER_DB_COLUMNS.map(col => {
+                                                          if (col === 'PLACAS UNIDAD') {
+                                                              return <td key={col} className="px-2.5 py-2 border border-slate-400 text-center uppercase">TOTALES</td>;
+                                                          }
+                                                          if (MASTER_DB_CURRENCY_COLS.has(col)) {
+                                                              return (
+                                                                  <td key={col} className="px-2.5 py-2 border border-slate-400 text-right font-mono whitespace-nowrap">
+                                                                      {formatAccountingMXN(masterDbPreview.columnSums[col] || 0)}
+                                                                  </td>
+                                                              );
+                                                          }
+                                                          if (col === 'KMS RECORRIDOS') {
+                                                              const v = masterDbPreview.columnSums['KMS RECORRIDOS'] || 0;
+                                                              return (
+                                                                  <td key={col} className="px-2.5 py-2 border border-slate-400 text-center font-mono whitespace-nowrap">
+                                                                      {v > 0 ? v.toLocaleString('es-MX', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : ''}
+                                                                  </td>
+                                                              );
+                                                          }
+                                                          if (col === 'DIESEL REAL CONSUMIDO') {
+                                                              const v = masterDbPreview.columnSums['DIESEL REAL CONSUMIDO'] || 0;
+                                                              return (
+                                                                  <td key={col} className="px-2.5 py-2 border border-slate-400 text-center font-mono whitespace-nowrap">
+                                                                      {v > 0 ? v.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : ''}
+                                                                  </td>
+                                                              );
+                                                          }
+                                                          return <td key={col} className="px-2.5 py-2 border border-slate-400" />;
+                                                      })}
+                                                  </tr>
+                                              </>
+                                          )}
+                                      </tbody>
+                                  </table>
+                              </div>
+                          </div>
                       </div>
 
                       <div className="bg-cyan-50 border border-cyan-200 rounded-xl p-4 flex items-start space-x-3">
@@ -2660,10 +3286,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ trips, onUpdateT
                           type="button"
                           onClick={() => exportMasterDatabaseExcel(trips.filter(t => filterByDateRange(t.date, activeDateRange)), operatorsList, unitsList, activeDateRange.label)}
                           className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl shadow-lg transition text-xs sm:text-sm active:scale-95"
-                          title="Descargar Base de Datos consolidada (1 fila por viaje con columnas de gastos separadas)"
+                          title="Descargar Base de Datos consolidada en Excel (34 columnas, 1 fila por viaje)"
                       >
                           <FileSpreadsheet className="h-4 w-4" />
-                          <span>BD Maestra (1 Fila x Viaje)</span>
+                          <span>BD Maestra (Excel)</span>
+                      </button>
+                      <button
+                          type="button"
+                          onClick={() => exportMasterDatabasePDF(trips.filter(t => filterByDateRange(t.date, activeDateRange)), operatorsList, unitsList, activeDateRange.label)}
+                          className="flex items-center gap-2 px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl shadow-lg transition text-xs sm:text-sm active:scale-95 border border-white/20"
+                          title="Descargar Base de Datos consolidada en PDF formato sábana horizontal (34 columnas)"
+                      >
+                          <FileText className="h-4 w-4" />
+                          <span>BD Maestra (PDF)</span>
                       </button>
                       <button
                           type="button"
